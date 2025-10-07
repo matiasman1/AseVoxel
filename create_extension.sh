@@ -33,15 +33,6 @@ if [ -f "$EXTENSION_NAME.aseprite-extension" ]; then
     rm "$EXTENSION_NAME.aseprite-extension"
 fi
 
-# Compile native libraries
-
-echo "Compiling native libraries..."
-g++ -shared -fPIC $(pkg-config --cflags lua5.4) -o bin/asevoxel_native.so asevoxel_native.cpp $(pkg-config --libs lua5.4)
-echo "Built asevoxel_native.so"
-
-x86_64-w64-mingw32-g++ -O2 -std=c++17 -D_WIN32_WINNT=0x0601 -shared asevoxel_native.cpp -Ithirdparty/lua-win/include -Lthirdparty/lua-win/lib -llua54 -static -static-libgcc -static-libstdc++ -Wl,--out-implib,libasevoxel_native.a -o bin/asevoxel_native.dll
-echo "Built asevoxel_native.dll"
-
 # Create a new zip archive with lua, json files and binary libraries
 echo "Creating $EXTENSION_NAME.zip..."
 zip -r "$EXTENSION_NAME.zip" *.lua *.json bin *.so *.dll lib
