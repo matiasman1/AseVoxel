@@ -548,17 +548,17 @@ function dialogueManager.openControlsDialog(parentDlg, viewParams, updateCallbac
   controlsDialog:slider{
     id = "absoluteZ",
     label = "Z:",
-    min = -90,
-    max = 90,
+    min = -180,
+    max = 180,
     value = 0,
     visible = false,
     onchange = function()
       -- Skip if we're programmatically updating controls or locked
       if dialogueManager.isUpdatingControls or dialogueManager.updateLock then return end
-      
+
       -- Get current value from slider
       local currentValue = controlsDialog.data.absoluteZ
-      
+
       -- Calculate the differential rotation, but with clamping to prevent large jumps
       local deltaZ = currentValue - previousValues.absoluteZ
 
@@ -571,27 +571,52 @@ function dialogueManager.openControlsDialog(parentDlg, viewParams, updateCallbac
           0,        -- No Y change
           deltaZ    -- Apply Z delta
         )
-        
+
         -- Extract Euler angles from the result
         local euler = mathUtils.matrixToEuler(newMatrix)
-        
+
         -- Update the master Euler angles
         viewParams.eulerX = euler.x
         viewParams.eulerY = euler.y
         viewParams.eulerZ = euler.z
-        
+
         -- Update legacy values for compatibility
         viewParams.xRotation = viewParams.eulerX
         viewParams.yRotation = viewParams.eulerY
         viewParams.zRotation = viewParams.eulerZ
-        
+
         -- Update the stored rotation matrix
         dialogueManager.currentRotationMatrix = newMatrix
-        
-        updateSlidersWithoutTriggeringEvents(math.floor(viewParams.eulerX),math.floor(viewParams.eulerY),math.floor(viewParams.eulerZ))
+
+        -- Update the Euler sliders without triggering their events
+        -- But do not reset the absolute controls
+        dialogueManager.isUpdatingControls = true
+        pcall(function()
+          controlsDialog:modify{id="eulerX", value=math.floor(viewParams.eulerX)}
+          controlsDialog:modify{id="eulerY", value=math.floor(viewParams.eulerY)}
+          controlsDialog:modify{id="eulerZ", value=math.floor(viewParams.eulerZ)}
+
+          -- Reset camera-relative controls to zero
+          controlsDialog:modify{id="relativeX", value=0}
+          controlsDialog:modify{id="relativeY", value=0}
+          controlsDialog:modify{id="relativeZ", value=0}
+        end)
+        dialogueManager.isUpdatingControls = false
+
+        -- Update previous values
+        previousValues.eulerX = viewParams.eulerX
+        previousValues.eulerY = viewParams.eulerY
+        previousValues.eulerZ = viewParams.eulerZ
+        previousValues.relativeX = 0
+        previousValues.relativeY = 0
+        previousValues.relativeZ = 0
+        previousValues.absoluteX = 0
+        previousValues.absoluteY = 0
+        previousValues.absoluteZ = currentValue
+
         dialogueManager.safeUpdate(viewParams, updateCallback)
       end
-      
+
       -- CRITICAL: Always update the previous value for next delta calculation
       previousValues.absoluteZ = currentValue
     end

@@ -763,7 +763,7 @@ local function openModelViewer()
   -- Add rotation display
   mainDlg:label{
     id = "rotationInfo",
-    text = "Model Space: X=315° Y=324° Z=29°"
+    text = "Euler Space: X=315° Y=324° Z=29°"
   }
   mainDlg:newrow()
   mainDlg:label{
@@ -1742,7 +1742,7 @@ local function openModelViewer()
               pcall(function()
                 mainDlg:modify{
                   id = "rotationInfo",
-                  text = string.format("Model Space: X=%.0f° Y=%.0f° Z=%.0f°", 
+                  text = string.format("Euler Space: X=%.0f° Y=%.0f° Z=%.0f°", 
                          viewParams.eulerX, viewParams.eulerY, viewParams.eulerZ)
                 }
               end)

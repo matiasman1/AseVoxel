@@ -289,4 +289,116 @@ function RemoteRenderer.render(voxelsFlat, options)
   return img
 end
 
+local nativeBridge = nil
+pcall(function() nativeBridge = require("nativeBridge") end)
+
+-- Attempt to render using native bridge (if available).
+-- model: array of voxels { x,y,z, color={r,g,b,a} }
+-- params: table with width,height, rotations, scale, orthogonal, shadingMode, lighting, fxStack, backgroundColor, etc.
+-- _metrics: optional table to record backend info
+function RemoteRenderer.nativeRender(model, params, _metrics)
+  if not nativeBridge or not nativeBridge.isAvailable or not nativeBridge.isAvailable() then
+    return nil, "native not available"
+  end
+  if not model or #model == 0 then return nil, "empty model" end
+
+  -- Build flat voxel list [x,y,z,r,g,b,a]
+  local flat = {}
+  for i,v in ipairs(model) do
+    local c = v.color or {}
+    flat[i] = {
+      v.x or 0, v.y or 0, v.z or 0,
+      math.max(0, math.min(255, c.r or c.red or 255)),
+      math.max(0, math.min(255, c.g or c.green or 255)),
+      math.max(0, math.min(255, c.b or c.blue or 255)),
+      math.max(0, math.min(255, c.a or c.alpha or 255))
+    }
+  end
+
+  local bg = params and params.backgroundColor
+  local xRot = params and (params.xRotation or params.rotationX) or 0
+  local yRot = params and (params.yRotation or params.rotationY) or 0
+  local zRot = params and (params.zRotation or params.rotationZ) or 0
+  local scale = params and (params.scale or params.zoom or 1) or 1
+
+  local nativeParams = {
+    width  = (params and params.width) or 200,
+    height = (params and params.height) or 200,
+    xRotation = xRot, yRotation = yRot, zRotation = zRot,
+    scale = scale,
+    orthogonal = params and (params.orthogonal or params.orthogonalView) or false,
+    basicShadeIntensity = params and (params.basicShadeIntensity or 50) or 50,
+    basicLightIntensity = params and (params.basicLightIntensity or 50) or 50,
+    fovDegrees = params and (params.fovDegrees or params.fov) or nil,
+    perspectiveScaleRef = params and (params.perspectiveScaleRef or "middle") or "middle",
+    backgroundColor = bg and {
+      r = bg.red or bg.r, g = bg.green or bg.g, b = bg.blue or bg.b, a = bg.alpha or bg.a
+    } or {r=0,g=0,b=0,a=0}
+  }
+
+  -- Inject lighting for Dynamic mode
+  if params and params.shadingMode == "Dynamic" and params.lighting then
+    local lc = params.lighting.lightColor
+    -- lc may be an Aseprite Color or a simple table; normalize
+    local lr = (lc and (lc.red or lc.r)) or 255
+    local lg = (lc and (lc.green or lc.g)) or 255
+    local lb = (lc and (lc.blue or lc.b)) or 255
+    nativeParams.lighting = {
+      pitch    = params.lighting.pitch or 0,
+      yaw      = params.lighting.yaw or 0,
+      diffuse  = params.lighting.diffuse or 60,
+      diameter = params.lighting.diameter or 100,
+      ambient  = params.lighting.ambient or 30,
+      rimEnabled = params.lighting.rimEnabled and true or false,
+      lightColor = { r = lr, g = lg, b = lb }
+    }
+  end
+
+  -- Call appropriate native renderer
+  local nativeResult
+  if params and params.shadingMode == "Stack" and nativeBridge.renderStack then
+    nativeParams.fxStack = params.fxStack
+    nativeResult = nativeBridge.renderStack(flat, nativeParams)
+  elseif params and params.shadingMode == "Dynamic" and nativeBridge.renderDynamic then
+    nativeResult = nativeBridge.renderDynamic(flat, nativeParams)
+  else
+    nativeResult = nativeBridge.renderBasic(flat, nativeParams)
+  end
+
+  if nativeResult and nativeResult.pixels then
+    local w = nativeResult.width
+    local h = nativeResult.height
+    local bytes = nativeResult.pixels
+    local expected = w * h * 4
+    if #bytes == expected then
+      local img = Image(w, h, ColorMode.RGB)
+      local idx = 1
+      for y=0,h-1 do
+        for x=0,w-1 do
+          local r = string.byte(bytes, idx    )
+          local g = string.byte(bytes, idx + 1)
+          local b = string.byte(bytes, idx + 2)
+          local a = string.byte(bytes, idx + 3)
+          idx = idx + 4
+          img:putPixel(x, y, app.pixelColor.rgba(r,g,b,a))
+        end
+      end
+      if _metrics then
+        if params and params.shadingMode == "Stack" then
+          _metrics.backend = "native-stack"
+        elseif params and params.shadingMode == "Dynamic" then
+          _metrics.backend = "native-dynamic"
+        else
+          _metrics.backend = "native-basic"
+        end
+      end
+      return img
+    else
+      print("[asevoxel-native] native buffer mismatch (fallback)")
+    end
+  end
+
+  return nil, "native failed"
+end
+
 return RemoteRenderer

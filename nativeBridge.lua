@@ -6,14 +6,16 @@ local nativeBridge = {
   _loadedPath = nil,          -- added: where module loaded from
   _forceDisabled = false,     -- added: debug flag to simulate absence
   _logOnce = {
-    transform_ok = false,
-    transform_fail = false,
-    vis_ok = false,
-    vis_fail = false,
-    render_basic_ok = false,
-    render_basic_fail = false,
-    render_stack_ok = false,
-    render_stack_fail = false
+    transform_ok = true,
+    transform_fail = true,
+    vis_ok = true,
+    vis_fail = true,
+    render_basic_ok = true,
+    render_basic_fail = true,
+    render_stack_ok = true,
+    render_stack_fail = true,
+    render_dynamic_ok = true,
+    render_dynamic_fail = true
   }
 }
 
@@ -318,6 +320,31 @@ function nativeBridge.renderStack(voxels, params)
   if not nativeBridge._logOnce.render_stack_ok then
     nativeBridge._logOnce.render_stack_ok = true
     print("[asevoxel-native] render_stack (native)")
+  end
+  return res
+end
+
+-- Dynamic lighting native bridge
+function nativeBridge.renderDynamic(voxels, params)
+  local m = mod()
+  if not (m and m.render_dynamic) then
+    if not nativeBridge._logOnce.render_dynamic_fail then
+      nativeBridge._logOnce.render_dynamic_fail = true
+      print("[asevoxel-native] render_dynamic not available (falling back)")
+    end
+    return nil, "native missing"
+  end
+  local ok, res = pcall(m.render_dynamic, voxels, params)
+  if not ok or type(res) ~= "table" or type(res.pixels) ~= "string" then
+    if not nativeBridge._logOnce.render_dynamic_fail then
+      nativeBridge._logOnce.render_dynamic_fail = true
+      print("[asevoxel-native] render_dynamic FAILED, falling back: " .. tostring(res))
+    end
+    return nil, res
+  end
+  if not nativeBridge._logOnce.render_dynamic_ok then
+    nativeBridge._logOnce.render_dynamic_ok = true
+    print("[asevoxel-native] render_dynamic (native)")
   end
   return res
 end
