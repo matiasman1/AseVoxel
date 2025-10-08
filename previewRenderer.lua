@@ -11,7 +11,7 @@ local rotation       = require("rotation")
 local mathUtils      = require("mathUtils")
 local fxStackModule  = require("fxStack")
 -- Optional native bridge (first feature: transform + face visibility)
-local nativeBridge_ok, nativeBridge = pcall(require, "nativeBridge")
+nativeBridge_ok, nativeBridge = pcall(require, "nativeBridge")
 -- REMOVE eager require to avoid automatic websocket prompt
 -- local remoteRenderer = nil
 -- local ok_remote, rr = pcall(require, "remoteRenderer")

@@ -292,7 +292,7 @@ end
 -- Tuned adaptive throttle for more responsive interactive slider drags
 viewerCore.setAdaptiveThrottle{
   -- Patch 3.75.2: raise global multiplier -> fewer renders while dragging
-  multiplier = 3,
+  multiplier = nativeBridge_ok and 2.5 or 3,
   minMs = 30,
   maxMs = 5000
 }
