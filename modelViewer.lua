@@ -1,3 +1,4 @@
+
 -- modelViewer.lua
 local mathUtils = require("mathUtils")
 local viewerCore = require("viewerCore")
@@ -10,7 +11,8 @@ local fxStack = require("fxStack")
 local dialogUtils = require("dialogUtils")
 local spriteWatcher = require("spriteWatcher") -- ADDED
 local nativeBridge_ok, nativeBridge = pcall(require, "nativeBridge")
-
+local meshBuilder = require("meshBuilder")
+local meshRenderer = require("meshRenderer")
 
 -- PATCH: shared (module-level) viewParams used by new simplified openModelViewer
 local viewParams = {
@@ -1190,11 +1192,125 @@ local function openModelViewer()
       end)
     end
   }
-  -- Auto-initialize debug info once
-  pcall(function() mainDlg.data.refreshDebug:onClick() end)
-  
-  -- Create the FX tab
-  mainDlg:tab{
+  -- Benchmark section
+  mainDlg:separator{ text = "Benchmark" }
+  mainDlg:label{
+    id = "meshBenchmarkResult",
+    text = "Mesh benchmark: (not run)"
+  }
+  mainDlg:newrow()
+  mainDlg:button{
+    id = "meshBenchmarkBtn",
+    text = "benchmark mesh",
+    onclick = function()
+      -- Ensure an active sprite/model exists
+      local sprite = app.activeSprite
+      if not sprite then
+        app.alert("No active sprite to benchmark.")
+        return
+      end
+      -- Generate current voxel model from sprite visibility/state
+      local model = previewRenderer.generateVoxelModel(sprite)
+      if not model or #model == 0 then
+        app.alert("No voxels found to benchmark.")
+        return
+      end
+      -- Try loading mesh pipeline modules
+if not (meshBuilder and meshRenderer) then
+        app.alert("Mesh benchmark unavailable: meshBuilder.lua and/or meshRenderer.lua not found.")
+        return
+      end
+      -- Build mesh once (exclude from render timing)
+      local mesh = nil
+      local okBuild, buildErr = pcall(function() mesh = meshBuilder.buildMesh(model) end)
+      if not okBuild or not mesh or not mesh.vertices or not mesh.triangles then
+        app.alert("Failed to build mesh for benchmark.")
+        return
+      end
+      -- Sampling setup: 100 combinations of rotations, scales, FOVs
+      local N = 100
+      local scales = { 0.75, 1.0, 1.25, 1.5 }
+      local fovs   = { 15, 25, 35, 45, 55, 65, 75 }
+      local function sampleParams(i)
+        local ax = (i * 13) % 360
+        local ay = (i * 29) % 360
+        local az = (i * 7)  % 360
+        local sc = scales[(i % #scales) + 1]
+        local fv = fovs[(i % #fovs) + 1]
+        return ax, ay, az, sc, fv
+      end
+      -- Prepare canvas size from current preview window (locals captured above)
+      local benchW = previewCanvasWidth or 200
+      local benchH = previewCanvasHeight or 200
+      -- Inform UI
+      pcall(function() mainDlg:modify{ id="meshBenchmarkResult", text="Running benchmark…" } end)
+      app.refresh()
+      -- Benchmark Mesh pipeline
+      local meshSum = 0.0
+      for i = 1, N do
+        local ax, ay, az, sc, fv = sampleParams(i)
+        local paramsMesh = {
+          width = benchW, height = benchH,
+          xRotation = ax, yRotation = ay, zRotation = az,
+          scale = sc,
+          orthogonal = false,
+          fovDegrees = fv,
+          perspectiveScaleRef = "middle",
+          backgroundColor = viewParams.backgroundColor
+        }
+        local t0 = os.clock()
+        local okR, _ = pcall(function() return meshRenderer.render(mesh, paramsMesh) end)
+        local dt = (os.clock() - t0) * 1000.0
+        if okR then meshSum = meshSum + dt end
+        if (i % 10) == 0 then app.refresh() end
+      end
+      local meshAvg = meshSum / N
+      -- Benchmark Rasterizer (old) using the local voxel renderer (bypass native/remote)
+      local rastSum = 0.0
+      for i = 1, N do
+        local ax, ay, az, sc, fv = sampleParams(i + 17) -- offset to vary sequences
+        local paramsRast = {
+          width = benchW, height = benchH,
+          xRotation = ax, yRotation = ay, zRotation = az,
+          scale = sc,
+          orthogonal = false,
+          fovDegrees = fv,
+          perspectiveScaleRef = "middle",
+          backgroundColor = viewParams.backgroundColor,
+          shadingMode = "Basic",
+          basicShadeIntensity = 50,
+          basicLightIntensity = 50
+        }
+        local t0 = os.clock()
+        local okR, _ = pcall(function() return previewRenderer.renderPreview(model, paramsRast) end)
+        local dt = (os.clock() - t0) * 1000.0
+        if okR then rastSum = rastSum + dt end
+        if (i % 10) == 0 then app.refresh() end
+      end
+      local rastAvg = rastSum / N
+      -- Compute comparison
+      local pct, verdict
+      if rastAvg > 0 then
+        if meshAvg < rastAvg then
+          pct = (1.0 - meshAvg / rastAvg) * 100.0
+          verdict = "faster"
+        else
+          pct = (meshAvg / rastAvg - 1.0) * 100.0
+          verdict = "slower"
+        end
+      else
+        pct = 0
+        verdict = "faster"
+      end
+      local line = string.format("Mesh %.1f%% (%s) than rasterizer", pct, verdict)
+      pcall(function() mainDlg:modify{ id="meshBenchmarkResult", text = line } end)
+    end
+  }
+   -- Auto-initialize debug info once
+   pcall(function() mainDlg.data.refreshDebug:onClick() end)
+   
+   -- Create the FX tab
+   mainDlg:tab{
     id = "fxTab",
     text = "FX"
   }
@@ -1869,7 +1985,7 @@ show{ wait = false }
   )
   
   -- Set flag to indicate positioning has been done
-  initialPositioningDone = true
+  initialPositioningDone = false
 end
 
 -- EXPORT both: new simplified (openModelViewer) and legacy (openModelViewerFull)
