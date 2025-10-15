@@ -32,6 +32,17 @@ local function _getRemote()
   return remoteRenderer
 end
 
+-- BEGIN: Mesh pipeline integration (mesh-model branch)
+local USE_MESH_PIPELINE = true
+local meshBuilder_ok, meshBuilder = pcall(require, "meshBuilder")
+local meshRenderer_ok, meshRenderer = pcall(require, "meshRenderer")
+if USE_MESH_PIPELINE and (not meshBuilder_ok or not meshRenderer_ok) then
+  -- Safety fallback: if new modules not present, disable mesh path
+  print("false")
+  USE_MESH_PIPELINE = false
+end
+-- END: Mesh pipeline integration
+
 --------------------------------------------------------------------------------
 -- Utility: Quaternion helpers (for lighting normal rotation only)
 --------------------------------------------------------------------------------
@@ -1245,6 +1256,28 @@ function previewRenderer.renderVoxelModel(model, params)
   local zRot = params.z or params.zRotation or 0
   local scale = params.scale or params.scaleLevel or 1.0
   params.scale = scale
+
+  -- Mesh pipeline: flat, unshaded rendering, ignoring lighting/shading modes
+  if USE_MESH_PIPELINE and meshBuilder and meshRenderer and model and #model > 0 then
+    local t0 = _nowMs()
+    local mesh = meshBuilder.buildMesh(model)
+    local img = meshRenderer.render(mesh, {
+      width = params.width or 200,
+      height = params.height or 200,
+      xRotation = xRot, yRotation = yRot, zRotation = zRot,
+      scale = scale,
+      orthogonal = params.orthogonal or params.orthogonalView or false,
+      fovDegrees = params.fovDegrees or params.fov or (params.depthPerspective and (5 + (75-5)*(params.depthPerspective/100))) or nil,
+      perspectiveScaleRef = params.perspectiveScaleRef or "middle",
+      backgroundColor = params.backgroundColor
+      -- Intentionally ignoring params.shadingMode, params.lighting, params.fxStack in this branch
+    })
+    if _metrics then
+      _metrics.backend = "mesh"
+      _metrics.t_total_ms = _nowMs() - t0
+    end
+    return img
+  end
 
   -- Native renderer fast-path (Basic / Stack / Dynamic)
   local canNativeNative = nativeBridge_ok

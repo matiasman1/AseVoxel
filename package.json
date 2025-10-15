@@ -1,8 +1,8 @@
 {
-    "name": "asevoxel-viewer",
-    "displayName": "AseVoxel - Viewer",
+    "name": "asevoxel-viewer-mesh",
+    "displayName": "AseVoxel - Mesh",
     "description": "3D voxel model viewer for Aseprite with native renderer support",
-    "version": "(leave empty)",
+    "version": "1.2.8",
     "author": {
         "name": "Pixelmatt"
     },
