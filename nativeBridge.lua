@@ -3,8 +3,8 @@
 local nativeBridge = {
   _mod = nil,
   _attempted = false,
-  _loadedPath = nil,          -- added: where module loaded from
-  _forceDisabled = false,     -- added: debug flag to simulate absence
+  _loadedPath = nil,
+  _forceDisabled = false,
   _logOnce = {
     transform_ok = true,
     transform_fail = true,
@@ -19,31 +19,24 @@ local nativeBridge = {
   }
 }
 
-local function _log(_) end -- silent (enable for debug)
-
+-- Simplified require/load logic: try plain require once, then a small
+-- set of platform-normalized candidate paths (base, bin, lib, cwd).
 local function tryRequire()
   if nativeBridge._attempted then return end
   nativeBridge._attempted = true
 
-  -- Try several require variants (search bin and lib too)
-  local tryNames = {
-    "asevoxel_native",
-    "bin.asevoxel_native",
-    "lib.asevoxel_native"
-  }
-  for _, name in ipairs(tryNames) do
-    local ok, mod = pcall(require, name)
-    if ok and type(mod) == "table" then
-      nativeBridge._mod = mod
-      nativeBridge._loadedPath = "(require:" .. name .. ")"
-      return
-    end
+  -- Try the canonical module name only
+  local ok, mod = pcall(require, "asevoxel_native")
+  if ok and type(mod) == "table" then
+    nativeBridge._mod = mod
+    nativeBridge._loadedPath = "(require:asevoxel_native)"
+    return
   end
 
-  -- Fallback manual load
+  -- Manual load fallback (platform-normalized, minimal candidates)
   local sep = package.config:sub(1,1)
-  local isWin = (sep == "\\" or (os.getenv("OS") or ""):match("Windows"))
-  local names = isWin and {"asevoxel_native.dll"} or {"asevoxel_native.so"}
+  local isWin = (sep == "\\")
+  local libname = isWin and "asevoxel_native.dll" or "asevoxel_native.so"
 
   local srcInfo = debug.getinfo(1, "S")
   local baseDir = "."
@@ -54,12 +47,13 @@ local function tryRequire()
     baseDir = baseDir:gsub("[/\\]$", "")
   end
 
-  local candidates = {}
-  for _, n in ipairs(names) do
-    candidates[#candidates+1] = baseDir .. "/" .. n
-    candidates[#candidates+1] = baseDir .. "/bin/" .. n
-    candidates[#candidates+1] = baseDir .. "/lib/" .. n
-  end
+  local candidates = {
+    baseDir .. sep .. libname,
+    baseDir .. sep .. "bin" .. sep .. libname,
+    baseDir .. sep .. "lib" .. sep .. libname,
+    "." .. sep .. libname,      -- current working dir
+    libname                     -- bare filename (let platform search handle)
+  }
 
   local openFn = "luaopen_asevoxel_native"
   for _, path in ipairs(candidates) do
@@ -69,15 +63,12 @@ local function tryRequire()
       if ok2 and type(res) == "table" then
         nativeBridge._mod = res
         nativeBridge._loadedPath = path
+        package.loaded["asevoxel_native"] = res
         return
       end
     end
   end
-
-  if isWin then
-    ok, nativeBridge._mod = pcall(package.loadlib("C:/Users/matia/AppData/Roaming/Aseprite/extensions/asevoxel-viewer/asevoxel_native.dll","luaopen_asevoxel_native"))
-    nativeBridge._loadedPath = "C:/Users/matia/AppData/Roaming/Aseprite/extensions/asevoxel-viewer/asevoxel_native.dll"
-  end
+  -- no hardcoded user-specific fallbacks
 end
 
 local function mod()
@@ -87,11 +78,10 @@ end
 
 --------------------------------------------------------------------------------
 -- Explicit loader: nativeBridge.loadnative(plugin_path)
+-- (keeps attempts minimal and platform-normalized)
 --------------------------------------------------------------------------------
 function nativeBridge.loadnative(plugin_path)
-  -- Normalize / discover path automatically if none provided
   if (not plugin_path) or plugin_path == "" then
-    -- Derive directory of this file
     local src = debug.getinfo(1, "S")
     if src and src.source then
       local s = src.source
@@ -102,6 +92,7 @@ function nativeBridge.loadnative(plugin_path)
       plugin_path = "."
     end
   end
+
   if nativeBridge._forceDisabled then
     return false, "forced disabled"
   end
@@ -109,64 +100,42 @@ function nativeBridge.loadnative(plugin_path)
     return true, nativeBridge._loadedPath or "(already loaded)"
   end
 
-  -- After first explicit attempt, mark as attempted (prevents tryRequire double run)
   nativeBridge._attempted = true
   plugin_path = plugin_path:gsub("[/\\]+$", "")
   local sep = package.config:sub(1,1)
   local isWin = (sep == "\\")
 
-  local function addVariants(tbl, path)
-    tbl[#tbl+1] = path
-    if path:find("\\") then
-      tbl[#tbl+1] = path:gsub("\\", "/")
-    elseif path:find("/") then
-      tbl[#tbl+1] = path:gsub("/", "\\")
-    end
-  end
-
-  if isWin then
-    local luaDll = plugin_path .. sep .. "lua54.dll"
-    local altLuaDll = luaDll:gsub("\\","/")
-    for _, cand in ipairs({luaDll, altLuaDll}) do
-      pcall(function() package.loadlib(cand, "") end)
-    end
-  end
-
   local libname = isWin and "asevoxel_native.dll" or "asevoxel_native.so"
-  local candidates = {}
-  -- Root level (relative & absolute)
-  addVariants(candidates, libname)                           -- ./asevoxel_native.dll (current working dir)
-  addVariants(candidates, "./" .. libname)
-  addVariants(candidates, "." .. sep .. libname)
-  addVariants(candidates, plugin_path .. sep .. libname)
-  addVariants(candidates, plugin_path .. sep .. "bin" .. sep .. libname)
-  addVariants(candidates, plugin_path .. sep .. "lib" .. sep .. libname)
+  local candidates = {
+    plugin_path .. sep .. libname,
+    plugin_path .. sep .. "bin" .. sep .. libname,
+    plugin_path .. sep .. "lib" .. sep .. libname,
+    "." .. sep .. libname,
+    libname
+  }
 
-  -- De-duplicate candidate list
+  -- De-duplicate
   local seen = {}
   local filtered = {}
   for _, p in ipairs(candidates) do
-    if not seen[p] then
-      seen[p] = true
-      filtered[#filtered+1] = p
-    end
+    if not seen[p] then seen[p] = true; filtered[#filtered+1] = p end
   end
   candidates = filtered
 
-  local patterns = {
-    plugin_path .. sep .. "?.dll",
-    plugin_path .. sep .. "?\\init.dll",
-    plugin_path .. sep .. "?.so",
-    plugin_path .. sep .. "?/init.so",
-    plugin_path .. sep .. "bin" .. sep .. "?.dll",
-    plugin_path .. sep .. "bin" .. sep .. "?.so"
-  }
-  local extra = {}
-  for _, p in ipairs(patterns) do
-    if p:find("\\") then extra[#extra+1] = p:gsub("\\","/")
-    elseif p:find("/") then extra[#extra+1] = p:gsub("/","\\") end
+  -- Add only a small, platform-normalized set of patterns to package.cpath
+  local patterns = {}
+  if isWin then
+    patterns = {
+      plugin_path .. sep .. "?.dll",
+      plugin_path .. sep .. "bin" .. sep .. "?.dll"
+    }
+  else
+    patterns = {
+      plugin_path .. sep .. "?.so",
+      plugin_path .. sep .. "bin" .. sep .. "?.so"
+    }
   end
-  for _, e in ipairs(extra) do patterns[#patterns+1] = e end
+
   for i = #patterns, 1, -1 do
     local pat = patterns[i]
     if not package.cpath:find(pat, 1, true) then
@@ -188,7 +157,7 @@ function nativeBridge.loadnative(plugin_path)
     end
   end
 
-  -- Fallback to existing logic
+  -- final fallback to tryRequire's plain require
   tryRequire()
   if nativeBridge._mod then
     return true, nativeBridge._loadedPath or "(require fallback)"
@@ -201,12 +170,10 @@ function nativeBridge.isAvailable()
   return mod() ~= nil
 end
 
--- Force-disable native acceleration (debug)
 function nativeBridge.setForceDisabled(v)
   nativeBridge._forceDisabled = not not v
 end
 
--- Runtime status for debug panel
 function nativeBridge.getStatus()
   return {
     available = (not nativeBridge._forceDisabled) and (nativeBridge._mod ~= nil),
@@ -299,7 +266,6 @@ function nativeBridge.renderBasic(voxels, params)
   return res
 end
 
--- Phase 4: native stack renderer bridge
 function nativeBridge.renderStack(voxels, params)
   local m = mod()
   if not (m and m.render_stack) then
@@ -324,7 +290,6 @@ function nativeBridge.renderStack(voxels, params)
   return res
 end
 
--- Dynamic lighting native bridge
 function nativeBridge.renderDynamic(voxels, params)
   local m = mod()
   if not (m and m.render_dynamic) then
@@ -347,6 +312,76 @@ function nativeBridge.renderDynamic(voxels, params)
     print("[asevoxel-native] render_dynamic (native)")
   end
   return res
+end
+
+--------------------------------------------------------------------------------
+-- Unload helpers: best-effort attempts to release loaded native DLLs so the
+-- extension folder can be removed on Windows/Unix. Unloading shared libs from
+-- Lua is platform/implementation dependent; these are best-effort routines.
+--------------------------------------------------------------------------------
+
+-- Returns true if we attempted any unload action
+function nativeBridge.unloadAll()
+  -- drop Lua references so GC can run
+  local loadedPath = nativeBridge._loadedPath
+  nativeBridge._mod = nil
+  nativeBridge._loadedPath = nil
+  nativeBridge._attempted = false
+  package.loaded["asevoxel_native"] = nil
+  package.loaded["lua54"] = nil
+  package.loaded["ffi"] = nil
+
+  -- try to use ffi (LuaJIT / LuaJIT-FFI compatible) to dlclose / FreeLibrary
+  local ok, ffi = pcall(require, "ffi")
+  if ok and ffi then
+    local sep = package.config:sub(1,1)
+    local isWin = (sep == "\\")
+    if isWin then
+      -- Windows: use kernel32 LoadLibraryA / FreeLibrary
+      pcall(function()
+        ffi.cdef[[
+          void* LoadLibraryA(const char* name);
+          int FreeLibrary(void* hModule);
+        ]]
+        local kernel = ffi.load("kernel32")
+        local function tryFree(name)
+          if not name or name == "" then return end
+          -- try to open and immediately free the library handle
+          local h = kernel.LoadLibraryA(name)
+          if h ~= nil then kernel.FreeLibrary(h) end
+        end
+        tryFree(loadedPath)
+        tryFree("lua54.dll")
+        tryFree("asevoxel_native.dll")
+      end)
+    else
+      -- POSIX: use dlopen/dlclose
+      pcall(function()
+        ffi.cdef[[
+          void* dlopen(const char* filename, int flags);
+          int dlclose(void* handle);
+        ]]
+        local RTLD_NOW = 2
+        local function tryClose(name)
+          if not name or name == "" then return end
+          local h = ffi.C.dlopen(name, RTLD_NOW)
+          if h ~= nil then ffi.C.dlclose(h) end
+        end
+        tryClose(loadedPath)
+        tryClose("liblua54.so")
+        tryClose("asevoxel_native.so")
+      end)
+    end
+  end
+
+  -- final attempt: run GC to drop any remaining references
+  collectgarbage()
+  return true
+end
+
+-- also provide a small explicit alias
+function nativeBridge.unloadNative()
+  return nativeBridge.unloadAll()
 end
 
 -- Auto-attempt native load on require (if not already loaded / forced off)

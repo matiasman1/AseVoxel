@@ -23,9 +23,3 @@ function exit(plugin)
   -- Cleanup, if needed.
   print("AseVoxel extension unloaded")
 end
-
-local function initializeViewer()
-  -- If there's any initialization code for the viewer,
-  -- the isometric angles will be used by default
-  -- thanks to our changes in modelViewer.lua
-end
