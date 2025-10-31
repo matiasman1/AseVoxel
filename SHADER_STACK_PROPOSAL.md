@@ -76,11 +76,16 @@ render/
 - **Output**: Per-face RGB with diffuse + ambient + rim components
 
 #### 2. **Basic Light** (existing, refactored)
-- **Purpose**: Simple top-down directional lighting
+- **Purpose**: Simple front-facing lighting based on face normal to camera angle
 - **Parameters**:
-  - Light intensity (0-100%)
-  - Shade intensity (0-100%)
-- **Output**: Per-face RGB with basic top/side/bottom differentiation
+  - Light intensity (0-100%) - brightness for faces toward camera
+  - Shade intensity (0-100%) - darkness for faces away from camera
+- **Algorithm**: 
+  - Compute dot product between face normal and camera direction
+  - Faces toward camera (dot > 0) get light intensity applied
+  - Faces away from camera (dot < 0) get shade intensity applied
+  - Simple, fast, camera-dependent lighting
+- **Output**: Per-face RGB based on normal-to-camera angle
 
 #### 3. **Ambient Occlusion** (NEW)
 - **Purpose**: Darken voxels based on surrounding geometry density
@@ -135,157 +140,59 @@ render/
 #### 8. **FaceShade** (existing, refactored)
 - **Purpose**: Shade faces based on model-center normals
 - **Parameters**:
+  - Alpha mode (FULL only - applies brightness as multiplier 0-255)
   - Top face brightness (0-255)
   - Bottom face brightness (0-255)
   - Front face brightness (0-255)
   - Back face brightness (0-255)
   - Left face brightness (0-255)
   - Right face brightness (0-255)
+- **Algorithm**:
+  - Determine face direction from model center axis (not camera)
+  - Multiply face RGB by (brightness/255)
+  - Alpha channel unchanged
 - **Output**: Multiplies face colors by direction-based factors
+- **Note**: Does NOT support literal colors, material modes, or tint - only alpha full mode (brightness multiplier)
 
 #### 9. **FaceShade Camera** (NEW)
-- **Purpose**: Shade faces based on camera-normal angle instead of model-center
+- **Purpose**: Shade faces based on camera-facing angle instead of model-center axis
 - **Parameters**:
+  - Alpha mode (FULL only - applies brightness as multiplier 0-255)
   - Front-facing brightness (0-255) - faces toward camera
-  - Side-facing brightness (0-255) - faces 45° to camera
-  - Away-facing brightness (0-255) - faces away from camera
-  - Gradient smoothness (0-100%)
-- **Output**: Smooth gradient based on dot(faceNormal, cameraDirection)
-- **Benefit**: More realistic than fixed face shading, camera-dependent
+  - Top-facing brightness (0-255) - faces upward relative to camera
+  - Left-facing brightness (0-255) - faces left relative to camera
+  - Right-facing brightness (0-255) - faces right relative to camera
+  - Bottom-facing brightness (0-255) - faces downward relative to camera
+- **Algorithm**:
+  - Project face normal to camera view space
+  - Determine dominant direction (front/top/left/right/bottom)
+  - Back faces never show, so no back parameter needed
+  - Apply corresponding brightness as multiplier
+- **Output**: Smooth camera-dependent shading
+- **Benefit**: More realistic than fixed face shading, adapts to camera rotation
+- **Note**: Only brightness multiplier mode (alpha full), no literal/material/tint modes
 
 #### 10. **Iso** (existing, refactored)
-- **Purpose**: Fixed isometric shading (top=bright, sides=medium, etc.)
+- **Purpose**: Fixed isometric shading with Alpha/Literal modes and Material/Full options
 - **Parameters**:
-  - Preset intensity (0-100%)
-- **Output**: Classic isometric look regardless of rotation
-
-#### 11. **Outline** (NEW)
-- **Purpose**: Draw outlines around geometry edges
-- **Parameters**:
-  - **Detection Mode**: 
-    - Geometry (elevation changes)
-    - Material (color changes)
-    - Both
-  - **Outline Width**: 0.1 to 2.0 voxels
-  - **Outline Color**: RGB or "contrast" (auto-calculate from voxel color)
-  - **Direction Mask**: Which directions to check (X+, X-, Y+, Y-, Z+, Z-)
-  - **Threshold**: Minimum difference to trigger outline
-  - **Placement**: Outside, Inside, Both
-  - **Depth Offset**: Push outline forward/back slightly
-- **Output**: Draws outline voxels/faces where discontinuities detected
-- **Algorithm**: For each visible face, check if neighbor voxel exists in selected directions; if missing or different material, draw outline
-
-#### 12. **Palette Mapping** (NEW)
-- **Purpose**: Quantize colors to limited palette (NES/GB style)
-- **Parameters**:
-  - **Palette Source**: 
-    - Custom palette (user-defined colors)
-    - Sprite palette (from current sprite)
-    - Generated (auto-generate N colors from model)
-  - **Max Colors**: 2-256 colors total
-  - **Subsprite Grid**: Enable NES-style 8x8 tile constraints
-    - Grid origin (X, Y)
-    - Grid size (4x4, 8x8, 16x16, 32x32)
-    - Colors per subsprite (2-4)
-  - **Mapping Algorithm**:
-    - Nearest luminosity
-    - Nearest hue
-    - Nearest saturation
-    - Nearest euclidean (RGB distance)
-    - Weighted combination
-  - **Locked Colors**: Don't remap specific colors (keep transparency, keep black, etc.)
-  - **Dithering**: None, Bayer 2x2, Bayer 4x4, Bayer 8x8, Floyd-Steinberg, Ordered
-- **Output**: Remapped colors per face/voxel
-- **Use Case**: Retro aesthetics, NES/GB/C64 palette constraints
-
-#### 13. **Dither** (NEW)
-- **Purpose**: Apply dithering patterns for color reduction or artistic effect
-- **Parameters**:
-  - **Pattern Type**: Bayer 2x2/4x4/8x8, Ordered, Random, Blue Noise, Floyd-Steinberg
-  - **Intensity**: 0-100%
-  - **Color Reduction**: Bits per channel (1-8)
-  - **Pattern Scale**: 1x, 2x, 4x
-  - **Apply To**: RGB, Alpha, Luminosity only
-- **Output**: Dithered color values
-- **Use Case**: Retro pixelart look, simulate CRT, reduce banding
-
-#### 14. **Cel Shade** (NEW)
-- **Purpose**: Posterize lighting into distinct bands (toon shading)
-- **Parameters**:
-  - Number of bands (2-8)
-  - Band edges (adjustable thresholds)
-  - Band smoothness (sharp vs gradient transitions)
-  - Outline integration (combine with outline shader)
-- **Output**: Quantized lighting levels
-- **Use Case**: Anime/cartoon aesthetics
-
-#### 15. **Fresnel** (NEW)
-- **Purpose**: Highlight edges based on viewing angle (rim glow)
-- **Parameters**:
-  - Fresnel power (1-5)
-  - Edge color (RGB)
-  - Edge intensity (0-200%)
-  - Affected by lighting (bool - respect previous lighting or override)
-- **Output**: Adds glow to faces perpendicular to camera
-- **Use Case**: Glass, force fields, magical effects
-
-#### 16. **Gradient Map** (NEW)
-- **Purpose**: Remap luminosity to color gradient (like Photoshop Gradient Map)
-- **Parameters**:
-  - Gradient stops (2-8 colors with positions 0-100%)
-  - Blend mode (replace, multiply, overlay, screen)
-  - Preserve hue (bool - only affect luminosity)
-- **Output**: Colors remapped through gradient
-- **Use Case**: Stylized looks, heat maps, mood shifts
-
-#### 17. **Fog** (NEW)
-- **Purpose**: Depth-based atmospheric fog
-- **Parameters**:
-  - Fog color (RGB)
-  - Fog start distance (0-500 voxels)
-  - Fog end distance (0-500 voxels)
-  - Fog density (0-100%)
-  - Fog mode (linear, exponential, exponential squared)
-- **Output**: Blends voxel colors toward fog color based on camera distance
-- **Use Case**: Atmospheric depth, hide distant geometry
-
-#### 18. **Bloom** (NEW)
-- **Purpose**: Glow effect on bright areas
-- **Parameters**:
-  - Threshold (only affect colors above this brightness)
-  - Intensity (0-200%)
-  - Blur radius (1-8 pixels)
-  - Blur quality (fast, normal, high)
-- **Output**: Additive glow around bright voxels
-- **Use Case**: Magical effects, neon, lights
-
-#### 19. **Vignette** (NEW)
-- **Purpose**: Darken/desaturate edges of viewport
-- **Parameters**:
-  - Inner radius (0-100%)
-  - Outer radius (0-100%)
-  - Intensity (0-100%)
-  - Color (RGB - default black)
-  - Mode (darken, desaturate, colorize)
-- **Output**: Radial gradient from center
-- **Use Case**: Focus attention, cinematic look
-
-#### 20. **Chromatic Aberration** (NEW)
-- **Purpose**: Separate RGB channels for lens distortion effect
-- **Parameters**:
-  - Offset strength (0-10 pixels)
-  - Direction (radial from center, or fixed direction)
-  - Channel separation (which channels to offset)
-- **Output**: RGB channels slightly misaligned
-- **Use Case**: Retro CRT, glitch effects, lens imperfection
-
-#### 21. **Pixelate** (NEW)
-- **Purpose**: Reduce effective resolution
-- **Parameters**:
-  - Block size (2x2, 4x4, 8x8, 16x16, custom)
-  - Sampling mode (nearest, average, dominant color)
-- **Output**: Downsampled and upsampled image
-- **Use Case**: Extra retro look, performance testing, artistic
+  - **Shading Mode**:
+    - Alpha (brightness multiplier 0-255)
+    - Literal (replace RGB with shade color)
+  - **Alpha Tint**: Optional color tint when in Alpha mode
+  - **Material vs Full**:
+    - Material: Only shade non-pure colors (preserve pure R/G/B/C/M/Y/K/W)
+    - Full: Shade all colors uniformly
+  - **Face Brightnesses**:
+    - Top face brightness (0-255) - applied to upward-facing faces
+    - Left face brightness (0-255) - applied to left-facing faces (camera-relative)
+    - Right face brightness (0-255) - applied to right-facing faces (camera-relative)
+- **Algorithm**:
+  - Determine face orientation: top (normal.y dominant), left/right (camera X projection)
+  - Bottom faces use same brightness as top faces (most upward/downward)
+  - In Alpha mode: multiply RGB by (brightness/255)
+  - In Literal mode: replace RGB with shade color at brightness level
+  - Material mode: skip pure colors (R=255,G=0,B=0 or similar pure hues)
+- **Output**: Classic isometric look with configurable mode
 
 ---
 
@@ -662,3 +569,1201 @@ return myShader
 - Should outline be pre-render (geometry) or post-render (image)?
 
 Once you approve the plan, I'll start implementation with the MVP shaders! 🚀
+
+
+# AseVoxel Shader Stack Refactor Proposal
+
+## Executive Summary
+
+This document outlines the **complete refactor** of AseVoxel's rendering system from the current monolithic `preview_renderer.lua` + inline shading modes into a **modular shader stack architecture**. The goal is to:
+
+1. **Separate concerns**: Extract Basic, Dynamic, FaceShade, and Iso shaders into discrete modules
+2. **Enable extensibility**: Allow users to create custom lighting/FX shaders in Lua
+3. **Preserve performance**: Maintain native C++ acceleration where available, with Lua fallback
+4. **Replicate existing output**: Phase 1 produces **identical** visual results to current implementation
+5. **Deprecate legacy**: Remove old `shadingMode` parameter system entirely after migration
+
+---
+
+## Phase 1: Compatibility Refactor (Verbatim Output)
+
+**Goal**: Transform existing code without changing visual output or breaking existing scenes.
+
+### 1.1 Current Architecture (Before)
+
+```
+preview_renderer.lua
+  ├─ renderPreview()
+  │   ├─ if shadingMode == "Basic" → basicModeBrightness()
+  │   ├─ if shadingMode == "Dynamic" → dynamic lighting inline
+  │   └─ if shadingMode == "Stack" → fxStackModule.shadeFace()
+  │
+  ├─ shading.lua
+  │   └─ shadeFaceColor() [dispatcher]
+  │
+  ├─ fx_stack.lua
+  │   └─ shadeFace() [faceshade + iso logic]
+  │
+  └─ asevoxel_native.cpp
+      ├─ render_basic()
+      ├─ render_dynamic()
+      └─ render_stack()
+```
+
+**Problems**:
+- Lighting logic scattered across 3 files
+- Native renderer has separate functions per mode (code duplication)
+- Hard to add new shaders without modifying core renderer
+- FX stack is separate from lighting (inconsistent)
+
+### 1.2 Target Architecture (After Phase 1)
+
+```
+render/
+  shaders/
+    lighting/
+      basic.lua          # Extracted from shading.lua::basicModeBrightness
+      dynamic.lua        # Extracted from shading.lua + preview_renderer.lua
+    fx/
+      faceshade.lua      # Extracted from fx_stack.lua
+      iso.lua            # Extracted from fx_stack.lua
+  
+  shader_stack.lua       # NEW: Stack execution engine
+  shader_interface.lua   # NEW: Common shader protocol
+  
+  preview_renderer.lua   # MODIFIED: Uses shader_stack.lua
+  shading.lua            # MODIFIED: Thin wrapper → shader_stack
+  native_bridge.lua      # MODIFIED: Routes to shader_stack
+
+asevoxel_native.cpp      # MODIFIED: Unified render_unified() function
+```
+
+**Key Changes**:
+- All shaders follow same interface (lighting + FX treated equally)
+- Native renderer has **one** function that accepts shader stack
+- Backward compatibility via automatic migration layer
+
+---
+
+## 1.3 Shader Interface Protocol
+
+Every shader (Lua or C++) implements this interface:
+
+### `shader_interface.lua` (NEW)
+
+```lua
+-- Common protocol for all shaders (lighting + FX)
+
+local shaderInterface = {}
+
+-- Shader metadata structure
+shaderInterface.ShaderInfo = {
+  id = "unique_shader_id",           -- e.g. "dynamic_light_v1"
+  name = "Human Readable Name",      -- e.g. "Dynamic Lighting"
+  version = "1.0.0",
+  author = "Author Name",
+  category = "lighting",             -- "lighting" or "fx"
+  complexity = "O(n)",               -- Performance hint: O(1), O(n), O(n²), etc.
+  description = "What this shader does",
+  
+  -- Feature flags
+  supportsNative = true,             -- Has C++ implementation
+  requiresGeometry = true,           -- Needs neighbor voxel data
+  requiresDepth = false,             -- Needs camera distance
+  requiresNormals = true,            -- Needs face normals
+  
+  -- Input/output capabilities
+  inputs = {
+    "base_color",                    -- Can read original voxel color
+    "previous_shader",               -- Can read previous shader output
+    "geometry",                      -- Can read voxel positions
+    "normals"                        -- Can read face normals
+  },
+  outputs = {
+    "color",                         -- Produces color output
+    "alpha"                          -- Produces alpha output
+  }
+}
+
+-- Shader parameter schema (for auto-UI generation)
+shaderInterface.ParamSchema = {
+  {
+    name = "intensity",
+    type = "slider",                 -- slider, color, vector, bool, choice, material
+    min = 0,
+    max = 100,
+    default = 50,
+    label = "Intensity",
+    tooltip = "Controls shader strength"
+  },
+  -- ... more parameters
+}
+
+-- Main shader interface
+function shaderInterface.process(shaderData, params)
+  -- shaderData structure:
+  -- {
+  --   faces = { {voxel={x,y,z}, face="top", normal={x,y,z}, color={r,g,b,a}, ...}, ... },
+  --   voxels = { {x,y,z, color={r,g,b,a}, neighbors={...}}, ... },
+  --   camera = {position={x,y,z}, rotation={x,y,z}, direction={x,y,z}, fov=45, ...},
+  --   modelBounds = {minX, maxX, minY, maxY, minZ, maxZ},
+  --   middlePoint = {x, y, z},
+  --   width = 400,
+  --   height = 400,
+  --   voxelSize = 2.5
+  -- }
+  --
+  -- params: table of shader-specific parameters
+  --
+  -- Returns: modified shaderData (with updated face colors)
+  
+  return shaderData
+end
+
+-- Optional: Custom UI builder (overrides auto-generated UI)
+function shaderInterface.buildUI(dlg, params, onChange)
+  -- dlg: Aseprite Dialog object
+  -- params: current parameter values
+  -- onChange: callback(newParams) when user changes values
+  
+  -- If not implemented, UI is auto-generated from ParamSchema
+end
+
+return shaderInterface
+```
+
+---
+
+## 1.4 Shader Stack Execution Engine
+
+### `shader_stack.lua` (NEW)
+
+```lua
+-- Executes shader pipeline (lighting → FX) with input routing
+
+local shaderStack = {}
+
+-- Shader registry (auto-populated on load)
+shaderStack.registry = {
+  lighting = {},  -- { shader_id = shaderModule, ... }
+  fx = {}
+}
+
+-- Auto-register shaders from folders
+function shaderStack.loadShaders()
+  local fs = app.fs
+  local shaderDirs = {
+    lighting = fs.joinPath(AseVoxel.extensionPath, "render", "shaders", "lighting"),
+    fx = fs.joinPath(AseVoxel.extensionPath, "render", "shaders", "fx")
+  }
+  
+  for category, dir in pairs(shaderDirs) do
+    if fs.isDirectory(dir) then
+      for _, file in ipairs(fs.listFiles(dir)) do
+        if file:match("%.lua$") then
+          local shaderPath = fs.joinPath(dir, file)
+          local shaderModule = dofile(shaderPath)
+          
+          if shaderModule and shaderModule.info and shaderModule.info.id then
+            local shaderId = shaderModule.info.id
+            
+            -- Check for native implementation
+            local hasNative = false
+            if nativeBridge and nativeBridge.hasNativeShader then
+              hasNative = nativeBridge.hasNativeShader(shaderId)
+            end
+            
+            -- Check for Lua implementation
+            local hasLua = (type(shaderModule.process) == "function")
+            
+            if not hasNative and not hasLua then
+              print("[AseVoxel] Shader " .. shaderId .. " has no implementation (Lua or Native), skipping")
+            else
+              shaderStack.registry[category][shaderId] = shaderModule
+              print("[AseVoxel] Registered shader: " .. shaderId .. 
+                    (hasNative and " [Native]" or "") .. 
+                    (hasLua and " [Lua]" or ""))
+            end
+          else
+            print("[AseVoxel] Invalid shader file: " .. file)
+          end
+        end
+      end
+    end
+  end
+  
+  -- Load user shaders from preferences folder (future)
+  -- ...existing code...
+end
+
+-- Execute full shader stack
+function shaderStack.execute(shaderData, stackConfig)
+  -- stackConfig = {
+  --   lighting = {
+  --     { id="dynamic_light", enabled=true, params={...}, inputFrom="base_color" },
+  --     { id="ambient_occlusion", enabled=true, params={...}, inputFrom="previous" }
+  --   },
+  --   fx = {
+  --     { id="faceshade", enabled=true, params={...}, inputFrom="previous" },
+  --     { id="outline", enabled=false, params={...}, inputFrom="geometry" }
+  --   }
+  -- }
+  
+  local result = shaderData
+  
+  -- Phase 1: Lighting shaders (top to bottom)
+  for _, shaderEntry in ipairs(stackConfig.lighting or {}) do
+    if shaderEntry.enabled then
+      -- ...existing code... (route input, call shader.process, merge output)
+    end
+  end
+  
+  -- Phase 2: FX shaders (top to bottom)
+  for _, shaderEntry in ipairs(stackConfig.fx or {}) do
+    if shaderEntry.enabled then
+      -- ...existing code... (route input, call shader.process, merge output)
+    end
+  end
+  
+  return result
+end
+
+-- Validate shader stack (check dependencies, circular refs, etc.)
+function shaderStack.validate(stackConfig)
+  -- ...existing code...
+end
+
+return shaderStack
+```
+
+---
+
+## 1.5 Extracted Shader Modules
+
+### `render/shaders/lighting/basic.lua` (NEW)
+
+Extract from `shading.lua::basicModeBrightness()`:
+
+```lua
+-- Basic front-facing lighting (normal to camera)
+
+local basicLight = {}
+
+basicLight.info = {
+  id = "basicLight",
+  name = "Basic Light",
+  version = "1.0.0",
+  author = "AseVoxel",
+  category = "lighting",
+  complexity = "O(n)",
+  description = "Simple camera-facing lighting - faces toward camera are lit, faces away are shaded",
+  supportsNative = true,
+  requiresNormals = true,
+  inputs = {"base_color", "normals"},
+  outputs = {"color"}
+}
+
+basicLight.paramSchema = {
+  {name="lightIntensity", type="slider", min=0, max=100, default=50, label="Light Intensity"},
+  {name="shadeIntensity", type="slider", min=0, max=100, default=50, label="Shade Intensity"}
+}
+
+function basicLight.process(shaderData, params)
+  -- Algorithm:
+  -- 1. For each face, compute dot(faceNormal, cameraDirection)
+  -- 2. Map dot from [-1, 1] to [shadeIntensity, lightIntensity]
+  -- 3. brightness = shadeIntensity + (lightIntensity - shadeIntensity) * ((dot + 1) / 2)
+  -- 4. Multiply face RGB by (brightness / 100)
+  
+  -- For each face in shaderData.faces:
+  --   1. Compute dot product: dot(faceNormal, cameraDirection)
+  --   2. If dot > 0 (facing camera): apply light intensity
+  --   3. If dot < 0 (facing away): apply shade intensity
+  --   4. Brightness = lerp(shadeIntensity, lightIntensity, (dot+1)/2)
+  --   5. Multiply face RGB by (brightness/100)
+  
+  return shaderData
+end
+
+return basicLight
+```
+
+### `render/shaders/lighting/dynamic.lua` (NEW)
+
+Extract from `shading.lua` + `preview_renderer.lua` dynamic lighting code:
+
+```lua
+-- Physically-inspired lighting with pitch/yaw/diffuse/ambient/rim
+
+local dynamicLight = {}
+
+dynamicLight.info = {
+  id = "dynamic_light_v1",
+  name = "Dynamic Lighting",
+  version = "1.0.0",
+  author = "AseVoxel",
+  category = "lighting",
+  complexity = "O(n)",
+  description = "Advanced lighting with directional light, falloff, and rim",
+  supportsNative = true,
+  requiresNormals = true,
+  requiresGeometry = true,  -- For radial attenuation
+  inputs = {"base_color", "normals", "geometry"},
+  outputs = {"color"}
+}
+
+dynamicLight.paramSchema = {
+  {name="pitch", type="slider", min=-90, max=90, default=25, label="Pitch"},
+  {name="yaw", type="slider", min=0, max=360, default=25, label="Yaw"},
+  {name="diffuse", type="slider", min=0, max=100, default=60, label="Diffuse"},
+  {name="ambient", type="slider", min=0, max=100, default=30, label="Ambient"},
+  {name="diameter", type="slider", min=0, max=200, default=100, label="Diameter"},
+  {name="rimEnabled", type="bool", default=false, label="Rim Lighting"},
+  {name="lightColor", type="color", default={r=255,g=255,b=255}, label="Light Color"}
+}
+
+function dynamicLight.process(shaderData, params)
+  -- ...existing code... (port dynamic lighting logic from shading.lua)
+  -- 1. Compute light direction from pitch/yaw
+  -- 2. Cache rotated normals
+  -- 3. For each face:
+  --    a. Compute Lambert diffuse (ndotl ^ exponent)
+  --    b. Apply radial attenuation (perpendicular distance from axis)
+  --    c. Add ambient term
+  --    d. Optionally add rim lighting (Fresnel)
+  --    e. Multiply base color by lighting factors
+  
+  return shaderData
+end
+
+return dynamicLight
+```
+
+### `render/shaders/fx/faceshade.lua` (NEW)
+
+Extract from `fx_stack.lua`:
+
+```lua
+-- Fixed face brightness based on model-center normals (Alpha Full only)
+
+local faceshade = {}
+
+faceshade.info = {
+  id = "faceshade",
+  name = "FaceShade",
+  version = "1.0.0",
+  author = "AseVoxel",
+  category = "fx",
+  complexity = "O(n)",
+  description = "Shade faces based on model-center axis (brightness multiplier only)",
+  supportsNative = true,
+  requiresNormals = true,
+  inputs = {"previous_shader"},
+  outputs = {"color"}
+}
+
+faceshade.paramSchema = {
+  {name="topBrightness", type="slider", min=0, max=255, default=255, label="Top"},
+  {name="bottomBrightness", type="slider", min=0, max=255, default=128, label="Bottom"},
+  {name="frontBrightness", type="slider", min=0, max=255, default=200, label="Front"},
+  {name="backBrightness", type="slider", min=0, max=255, default=150, label="Back"},
+  {name="leftBrightness", type="slider", min=0, max=255, default=180, label="Left"},
+  {name="rightBrightness", type="slider", min=0, max=255, default=220, label="Right"}
+}
+
+function faceshade.process(shaderData, params)
+  -- For each face:
+  --   1. Determine face direction from model center (not camera): top/bottom/front/back/left/right
+  --   2. Get corresponding brightness (0-255)
+  --   3. Multiply RGB by (brightness/255), alpha unchanged
+  -- NOTE: ONLY Alpha Full mode - no literal, material, or tint support
+  
+  return shaderData
+end
+
+return faceshade
+```
+
+### `render/shaders/fx/faceshade_camera.lua` (NEW - replaces old FaceShade Camera concept)
+
+```lua
+-- Camera-relative face shading (no back faces)
+
+local faceshadeCamera = {}
+
+faceshadeCamera.info = {
+  id = "faceshadeCamera",
+  name = "FaceShade (Camera)",
+  version = "1.0.0",
+  author = "AseVoxel",
+  category = "fx",
+  complexity = "O(n)",
+  description = "Shade faces based on camera projection (Alpha Full only)",
+  supportsNative = true,
+  requiresNormals = true,
+  inputs = {"previous_shader"},
+  outputs = {"color"}
+}
+
+faceshadeCamera.paramSchema = {
+  {name="frontBrightness", type="slider", min=0, max=255, default=255, label="Front"},
+  {name="topBrightness", type="slider", min=0, max=255, default=220, label="Top"},
+  {name="leftBrightness", type="slider", min=0, max=255, default=180, label="Left"},
+  {name="rightBrightness", type="slider", min=0, max=255, default=200, label="Right"},
+  {name="bottomBrightness", type="slider", min=0, max=255, default=128, label="Bottom"}
+  -- NO backBrightness - back faces don't show in camera projection
+}
+
+function faceshadeCamera.process(shaderData, params)
+  -- For each visible face:
+  --   1. Project face normal to camera view space
+  --   2. Determine dominant direction: front/top/left/right/bottom
+  --   3. Back faces are never visible (culled/occluded)
+  --   4. Apply corresponding brightness: RGB *= (brightness/255)
+  -- NOTE: ONLY Alpha Full mode - no literal, material, or tint support
+  
+  return shaderData
+end
+
+return faceshadeCamera
+```
+
+### `render/shaders/fx/iso.lua` (NEW)
+
+Extract from `fx_stack.lua`:
+
+```lua
+-- Isometric shading with Alpha/Literal modes and Material/Full options
+
+local iso = {}
+
+iso.info = {
+  id = "iso",
+  name = "Isometric Shade",
+  version = "1.0.0",
+  author = "AseVoxel",
+  category = "fx",
+  complexity = "O(n)",
+  description = "Classic isometric look with Alpha/Literal modes, Material filtering, optional Tint",
+  supportsNative = true,
+  requiresNormals = true,
+  inputs = {"previous_shader"},
+  outputs = {"color"}
+}
+
+iso.paramSchema = {
+  {name="shadingMode", type="choice", options={"alpha", "literal"}, default="alpha", label="Mode"},
+  {name="materialMode", type="bool", default=false, label="Material Mode (skip pure colors)"},
+  {name="enableTint", type="bool", default=false, label="Enable Tint (Alpha mode)"},
+  {name="alphaTint", type="color", default={r=255, g=255, b=255}, label="Tint Color"},
+  {name="topBrightness", type="slider", min=0, max=255, default=255, label="Top/Bottom"},
+  {name="leftBrightness", type="slider", min=0, max=255, default=180, label="Left"},
+  {name="rightBrightness", type="slider", min=0, max=255, default=220, label="Right"}
+}
+
+function iso.process(shaderData, params)
+  -- For each face:
+  --   1. Determine: top (normal.y dominant), left/right (camera X projection)
+  --   2. Bottom uses topBrightness
+  --   
+  --   If materialMode:
+  --     - Check if RGB is pure color (one channel 255, others 0/near-0)
+  --     - If pure, skip this face
+  --   
+  --   If shadingMode == "alpha":
+  --     - brightness = face orientation brightness (0-255)
+  --     - If enableTint: RGB *= (brightness/255) * (tint/255)
+  --     - Else: RGB *= (brightness/255)
+  --   
+  --   If shadingMode == "literal":
+  --     - Replace RGB with {brightness, brightness, brightness}
+  
+  return shaderData
+end
+
+return iso
+```
+
+---
+
+## 1.6 Native Bridge Integration
+
+### `native_bridge.lua` (MODIFIED)
+
+```lua
+-- ...existing code...
+
+-- NEW: Unified native render that accepts shader stack
+function nativeBridge.renderUnified(voxels, params, shaderStack)
+  -- shaderStack = {
+  --   lighting = { {id="basic_light_v1", params={...}}, ... },
+  --   fx = { {id="faceshade_v1", params={...}}, ... }
+  -- }
+  
+  -- Check if ALL shaders in stack have native implementations
+  local allNative = true
+  for _, entry in ipairs(shaderStack.lighting or {}) do
+    if not nativeBridge.hasNativeShader(entry.id) then
+      allNative = false
+      break
+    end
+  end
+  for _, entry in ipairs(shaderStack.fx or {}) do
+    if not nativeBridge.hasNativeShader(entry.id) then
+      allNative = false
+      break
+    end
+  end
+  
+  if allNative then
+    -- Pure native path: all shaders in C++
+    return asevoxel_native.render_unified(voxels, params, shaderStack)
+  else
+    -- Hybrid path: mix native + Lua shaders
+    return nativeBridge.renderHybrid(voxels, params, shaderStack)
+  end
+end
+
+function nativeBridge.renderHybrid(voxels, params, shaderStack)
+  -- Execute native shaders in C++, Lua shaders via callback
+  -- Native renderer calls Lua functions for missing shaders
+  -- ...existing code...
+end
+
+-- ...existing code...
+```
+
+### asevoxel_native.cpp (MODIFIED)
+
+```cpp
+// ...existing code...
+
+// NEW: Unified renderer that accepts shader stack
+static int l_render_unified(lua_State* L) {
+  // Args: (voxels, params, shaderStack)
+  // ...existing code... (parse voxels array, params)
+  
+  // Parse shader stack
+  lua_getfield(L, 3, "lighting");
+  // ...existing code... (iterate lighting shaders, check if native impl exists)
+  
+  lua_getfield(L, 3, "fx");
+  // ...existing code... (iterate FX shaders, check if native impl exists)
+  
+  // Execute shader pipeline:
+  // 1. Geometry pass (visibility, depth sort) - reuse existing logic
+  // 2. Lighting pass (call native shader functions or Lua callbacks)
+  // 3. FX pass (call native shader functions or Lua callbacks)
+  // 4. Rasterize final colors
+  
+  // ...existing code... (build Image, return)
+}
+
+// Native shader implementations (called by render_unified)
+namespace shaders {
+  void apply_basic_light(FacePoly* faces, int count, BasicLightParams params) {
+    // ...existing code... (port render_basic lighting logic)
+  }
+  
+  void apply_dynamic_light(FacePoly* faces, int count, DynamicLightParams params) {
+    // ...existing code... (port render_dynamic lighting logic)
+  }
+  
+  void apply_faceshade(FacePoly* faces, int count, FaceShadeParams params) {
+    // ...existing code... (port render_stack faceshade logic)
+  }
+  
+  void apply_iso(FacePoly* faces, int count, IsoParams params) {
+    // ...existing code... (port render_stack iso logic)
+  }
+}
+
+static const luaL_Reg FUNCS[] = {
+  // ...existing code...
+  {"render_unified", l_render_unified},  // NEW
+  // Keep old functions for backward compat (marked deprecated):
+  {"render_basic", l_render_basic},      // DEPRECATED
+  {"render_dynamic", l_render_dynamic},  // DEPRECATED
+  {"render_stack", l_render_stack},      // DEPRECATED
+  {nullptr, nullptr}
+};
+```
+
+---
+
+## 1.7 Migration Layer (Backward Compatibility)
+
+### `preview_renderer.lua` (MODIFIED)
+
+```lua
+-- ...existing code...
+
+function previewRenderer.renderVoxelModel(model, params)
+  _initModules()
+  params = params or {}
+  
+  -- AUTO-MIGRATE LEGACY PARAMS
+  if params.shadingMode then
+    params.shaderStack = previewRenderer.migrateLegacyMode(params.shadingMode, params)
+    print("[AseVoxel] Auto-migrated legacy shadingMode to shader stack")
+  end
+  
+  -- NEW: Use shader stack if present
+  if params.shaderStack then
+    return previewRenderer.renderWithShaderStack(model, params)
+  end
+  
+  -- FALLBACK: Old path (should never reach here after migration)
+  return previewRenderer.renderPreview(model, params)
+end
+
+-- NEW: Migration logic
+function previewRenderer.migrateLegacyMode(shadingMode, params)
+  local stack = { lighting = {}, fx = {} }
+  
+  if shadingMode == "Basic" or shadingMode == "Simple" then
+    table.insert(stack.lighting, {
+      id = "basic_light_v1",
+      enabled = true,
+      params = {
+        basicShadeIntensity = params.basicShadeIntensity or 50,
+        basicLightIntensity = params.basicLightIntensity or 50
+      },
+      inputFrom = "base_color"
+    })
+  
+  elseif shadingMode == "Dynamic" or shadingMode == "Complete" then
+    table.insert(stack.lighting, {
+      id = "dynamic_light_v1",
+      enabled = true,
+      params = {
+        pitch = params.lighting and params.lighting.pitch or 25,
+        yaw = params.lighting and params.lighting.yaw or 25,
+        diffuse = params.lighting and params.lighting.diffuse or 60,
+        ambient = params.lighting and params.lighting.ambient or 30,
+        diameter = params.lighting and params.lighting.diameter or 100,
+        rimEnabled = params.lighting and params.lighting.rimEnabled or false,
+        lightColor = params.lighting and params.lighting.lightColor or {r=255,g=255,b=255}
+      },
+      inputFrom = "base_color"
+    })
+  
+  elseif shadingMode == "Stack" then
+    -- Parse old fxStack format
+    if params.fxStack and params.fxStack.modules then
+      for _, module in ipairs(params.fxStack.modules) do
+        if module.shape == "FaceShade" then
+          table.insert(stack.fx, {
+            id = "faceshade_v1",
+            enabled = true,
+            params = {
+              -- ...existing code... (extract colors from module)
+            },
+            inputFrom = "previous"
+          })
+        elseif module.shape == "Iso" then
+          table.insert(stack.fx, {
+            id = "iso_v1",
+            enabled = true,
+            params = { intensity = 100 },
+            inputFrom = "previous"
+          })
+        end
+      end
+    end
+  end
+  
+  return stack
+end
+
+-- NEW: Render with shader stack
+function previewRenderer.renderWithShaderStack(model, params)
+  local shaderStack = require("render.shader_stack")
+  
+  -- Build shaderData structure
+  local shaderData = previewRenderer.buildShaderData(model, params)
+  
+  -- Execute shader stack
+  local result = shaderStack.execute(shaderData, params.shaderStack)
+  
+  -- Rasterize final image
+  return previewRenderer.rasterizeShaderResult(result, params)
+end
+
+-- ...existing code...
+```
+
+---
+
+## 1.8 UI Changes (Phase 1: Minimal)
+
+### Current UI Tabs:
+```
+[Render] [Lighting] [Effects] [Animation] [Export] [Debug]
+```
+
+### Phase 1 UI (Backward Compatible):
+```
+[Render] [Lighting] [Shader Stack] [Animation] [Export] [Debug]
+```
+
+**"Lighting" Tab** (DEPRECATED but kept):
+- Add banner: "⚠️ Legacy mode. Switch to Shader Stack for advanced control."
+- Keep existing Basic/Dynamic/Stack radio buttons (auto-migrate on selection)
+
+**"Shader Stack" Tab** (NEW):
+```
+┌─────────────────────────────────────────────┐
+│ 🔦 LIGHTING SHADERS                         │
+├─────────────────────────────────────────────┤
+│ ☑ Basic Light                    [↑] [↓] [×]│
+│   [Open parameters]                         │
+│                                             │
+├─────────────────────────────────────────────┤
+| (popupdialog)
+
+├─────────────────────────────────────────────┤
+│ [+ Add Lighting Shader ▼]                   │
+│    ├─ Basic Light                           │ │
+│    ├─ Dynamic Light                         │ │
+│    ├─ Ambient Occlusion                     │ │
+│    ├─ Hemisphere Light                      │ │
+│    ├─ Point Light                           │ │
+│    ├─ Directional Light                     │ │
+│    └─ Emissive                              │ │
+└─────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────┐
+│ 🎨 FX SHADERS                               │
+├─────────────────────────────────────────────┤
+│ (empty - click "+" to add)                  │
+├─────────────────────────────────────────────┤
+│ [+ Add FX Shader ▼]                         │
+│    ├─ FaceShade                             │ │
+│    ├─ FaceShade (Camera)                    │ │
+│    ├─ Iso                                   │ │
+│    ├─ Outline                               │ │
+│    ├─ Palette Mapping                       │ │
+│    ├─ Dither                                │ │
+│    ├─ Cel Shade                             │ │
+│    ├─ Fresnel                               │ │
+│    ├─ Gradient Map                          │ │
+│    ├─ Fog                                   │ │
+│    ├─ Bloom                                 │ │
+│    ├─ Vignette                              │ │
+│    ├─ Chromatic Aberration                  │ │
+│    └─ Pixelate                              │ │
+│  └─────────────────────────────────────────────┘
+│                                             │
+│  [Clear All]  [Load Preset ▼]  [Save Preset]│
+└─────────────────────────────────────────────┘
+```
+
+---
+
+## 1.9 Scene File Format (.asevoxel)
+
+### Scene Archive Structure:
+```
+scene.asevoxel  (ZIP archive renamed)
+  ├─ manifest.json
+  ├─ model.aseprite  (or model.png / model.gif)
+  ├─ shader_stack.json
+  └─ shaders/  (optional: bundled custom shaders)
+      ├─ custom_light_01.lua
+      └─ custom_light_01.json
+```
+
+### `manifest.json`:
+```json
+{
+  "version": "1.0",
+  "aseVoxelVersion": "1.5.0",
+  "modelFile": "model.aseprite",
+  "created": "2025-01-15T10:30:00Z",
+  "author": "User Name"
+}
+```
+
+### `shader_stack.json`:
+```json
+{
+  "version": "1.0",
+  "camera": {
+    "xRotation": 25,
+    "yRotation": 45,
+    "zRotation": 0,
+    "orthogonal": false,
+    "fovDegrees": 45,
+    "perspectiveScaleRef": "middle"
+  },
+  "render": {
+    "width": 400,
+    "height": 400,
+    "scale": 2.0,
+    "backgroundColor": {"r": 0, "g": 0, "b": 0, "a": 0}
+  },
+  "shaderStack": {
+    "lighting": [
+      {
+        "id": "dynamic_light_v1",
+        "enabled": true,
+        "name": "Main Light",  // User-renamed
+        "inputFrom": "base_color",
+        "params": {
+          "pitch": 25,
+          "yaw": 45,
+          "diffuse": 60,
+          "ambient": 30,
+          "diameter": 100,
+          "rimEnabled": true,
+          "lightColor": {"r": 255, "g": 230, "b": 200}
+        }
+      }
+    ],
+    "fx": [
+      {
+        "id": "faceshade_v1",
+        "enabled": true,
+        "name": "FaceShade",
+        "inputFrom": "previous",
+        "params": {
+          "topBrightness": 255,
+          "bottomBrightness": 100,
+          "frontBrightness": 200,
+          "backBrightness": 150,
+          "leftBrightness": 180,
+          "rightBrightness": 220
+        }
+      }
+    ]
+  }
+}
+```
+
+---
+
+## 1.10 Shader Parameter Widget System (Auto-UI)
+
+### `render/shader_ui.lua` (NEW)
+
+```lua
+-- Auto-generate UI from shader parameter schemas
+
+local shaderUI = {}
+
+-- Widget builders for each parameter type
+shaderUI.widgets = {
+  slider = function(dlg, param, value, onChange)
+    dlg:slider{
+      id = param.name,
+      label = param.label or param.name,
+      min = param.min or 0,
+      max = param.max or 100,
+      value = value or param.default,
+      onchange = function() onChange(param.name, dlg.data[param.name]) end
+    }
+  end,
+  
+  color = function(dlg, param, value, onChange)
+    local c = value or param.default or {r=255, g=255, b=255}
+    dlg:color{
+      id = param.name,
+      label = param.label or param.name,
+      color = Color(c.r, c.g, c.b),
+      onchange = function()
+        local col = dlg.data[param.name]
+        onChange(param.name, {r=col.red, g=col.green, b=col.blue})
+      end
+    }
+  end,
+  
+  bool = function(dlg, param, value, onChange)
+    dlg:check{
+      id = param.name,
+      label = param.label or param.name,
+      selected = value or param.default or false,
+      onchange = function() onChange(param.name, dlg.data[param.name]) end
+    }
+  end,
+  
+  vector = function(dlg, param, value, onChange)
+    -- Pitch + Yaw sliders with optional cone preview
+    local v = value or param.default or {pitch=0, yaw=0}
+    dlg:slider{
+      id = param.name .. "_pitch",
+      label = (param.label or param.name) .. " Pitch",
+      min = param.pitchMin or -90,
+      max = param.pitchMax or 90,
+      value = v.pitch,
+      onchange = function()
+        onChange(param.name, {
+          pitch = dlg.data[param.name .. "_pitch"],
+          yaw = dlg.data[param.name .. "_yaw"]
+        })
+      end
+    }
+    dlg:slider{
+      id = param.name .. "_yaw",
+      label = (param.label or param.name) .. " Yaw",
+      min = param.yawMin or 0,
+      max = param.yawMax or 360,
+      value = v.yaw,
+      onchange = function()
+        onChange(param.name, {
+          pitch = dlg.data[param.name .. "_pitch"],
+          yaw = dlg.data[param.name .. "_yaw"]
+        })
+      end
+    }
+  end,
+  
+  material = function(dlg, param, value, onChange)
+    -- Color picker + material selector (opaque/glass/metal/etc)
+    local v = value or param.default or {r=255, g=255, b=255, type="opaque"}
+    dlg:color{
+      id = param.name .. "_color",
+      label = param.label or param.name,
+      color = Color(v.r, v.g, v.b),
+      onchange = function()
+        local col = dlg.data[param.name .. "_color"]
+        onChange(param.name, {
+          r = col.red, g = col.green, b = col.blue,
+          type = dlg.data[param.name .. "_type"]
+        })
+      end
+    }
+    dlg:combobox{
+      id = param.name .. "_type",
+      option = v.type,
+      options = {"opaque", "glass", "metal", "emissive", "dither"},
+      onchange = function()
+        local col = dlg.data[param.name .. "_color"]
+        onChange(param.name, {
+          r = col.red, g = col.green, b = col.blue,
+          type = dlg.data[param.name .. "_type"]
+        })
+      end
+    }
+  end,
+  
+  choice = function(dlg, param, value, onChange)
+    dlg:combobox{
+      id = param.name,
+      label = param.label or param.name,
+      option = value or param.default,
+      options = param.options or {"option1", "option2"},
+      onchange = function() onChange(param.name, dlg.data[param.name]) end
+    }
+  end
+}
+
+-- Build UI for shader (auto-generated or custom)
+function shaderUI.buildShaderUI(dlg, shader, params, onChange)
+  if shader.buildUI then
+    -- Custom UI provided by shader
+    shader.buildUI(dlg, params, onChange)
+  else
+    -- Auto-generate from param schema
+    for _, paramDef in ipairs(shader.paramSchema or {}) do
+      local widgetBuilder = shaderUI.widgets[paramDef.type]
+      if widgetBuilder then
+        widgetBuilder(dlg, paramDef, params[paramDef.name], onChange)
+      else
+        print("[AseVoxel] Unknown param type: " .. tostring(paramDef.type))
+      end
+    end
+  end
+end
+
+return shaderUI
+```
+
+---
+
+## 1.11 Shader Auto-Registration
+
+### `shader_stack.lua::loadShaders()` (IMPLEMENTATION)
+
+```lua
+-- ...existing code...
+
+function shaderStack.loadShaders()
+  local fs = app.fs
+  local shaderDirs = {
+    lighting = fs.joinPath(AseVoxel.extensionPath, "render", "shaders", "lighting"),
+    fx = fs.joinPath(AseVoxel.extensionPath, "render", "shaders", "fx")
+  }
+  
+  for category, dir in pairs(shaderDirs) do
+    if fs.isDirectory(dir) then
+      for _, file in ipairs(fs.listFiles(dir)) do
+        if file:match("%.lua$") then
+          local shaderPath = fs.joinPath(dir, file)
+          local shaderModule = dofile(shaderPath)
+          
+          if shaderModule and shaderModule.info and shaderModule.info.id then
+            local shaderId = shaderModule.info.id
+            
+            -- Check for native implementation
+            local hasNative = false
+            if nativeBridge and nativeBridge.hasNativeShader then
+              hasNative = nativeBridge.hasNativeShader(shaderId)
+            end
+            
+            -- Check for Lua implementation
+            local hasLua = (type(shaderModule.process) == "function")
+            
+            if not hasNative and not hasLua then
+              print("[AseVoxel] Shader " .. shaderId .. " has no implementation (Lua or Native), skipping")
+            else
+              shaderStack.registry[category][shaderId] = shaderModule
+              print("[AseVoxel] Registered shader: " .. shaderId .. 
+                    (hasNative and " [Native]" or "") .. 
+                    (hasLua and " [Lua]" or ""))
+            end
+          else
+            print("[AseVoxel] Invalid shader file: " .. file)
+          end
+        end
+      end
+    end
+  end
+  
+  -- Load user shaders from preferences folder (future)
+  -- ...existing code...
+end
+
+-- Call on module load
+shaderStack.loadShaders()
+
+-- ...existing code...
+```
+
+---
+
+## 1.12 Order of Implementation (Suggested)
+
+### Week 1: Core Infrastructure
+1. ✅ Create `shader_interface.lua` (protocol definition)
+2. ✅ Create `shader_stack.lua` (execution engine skeleton)
+3. ✅ Create `shader_ui.lua` (auto-UI generator)
+4. ✅ Extract basic.lua (working implementation)
+5. ✅ Test Basic Light shader in isolation (unit test)
+
+### Week 2: Extract Remaining Shaders
+6. ✅ Extract dynamic.lua
+7. ✅ Extract faceshade.lua
+8. ✅ Extract iso.lua
+9. ✅ Implement `previewRenderer.migrateLegacyMode()`
+10. ✅ Test migration layer (verify verbatim output)
+
+### Week 3: Native Integration
+11. ✅ Modify asevoxel_native.cpp (add `render_unified`)
+12. ✅ Implement native versions of 4 core shaders
+13. ✅ Implement hybrid path (Native + Lua shader mixing)
+14. ✅ Performance testing (verify no regression)
+
+### Week 4: UI & Polish
+15. ✅ Add "Shader Stack" tab to main dialog
+16. ✅ Implement shader list (collapsible, reorderable)
+17. ✅ Implement "Add Shader" dropdown menu
+18. ✅ Implement scene save/load (.asevoxel format)
+19. ✅ Documentation + deprecation warnings
+
+---
+
+## 1.13 Success Criteria (Phase 1)
+
+### Visual Output
+- ✅ `shadingMode="Basic"` → Shader Stack → **Identical** rendered image (pixel-perfect)
+- ✅ `shadingMode="Dynamic"` → Shader Stack → **Identical** rendered image
+- ✅ `shadingMode="Stack"` (old FX) → Shader Stack → **Identical** rendered image
+
+### Performance
+- ✅ Native path: **Same or better** performance vs old `render_basic/dynamic/stack`
+- ✅ Lua path: **No worse than 10% slower** (acceptable for extensibility)
+- ✅ Hybrid path: **Graceful degradation** when mixing Native + Lua
+
+### Backward Compatibility
+- ✅ Old scene files auto-migrate on load (one-time conversion)
+- ✅ Old API calls (`params.shadingMode`) still work (with deprecation warning)
+- ✅ No breaking changes to existing user workflows
+
+### Extensibility
+- ✅ User can drop `.lua` shader in lighting → Auto-loads
+- ✅ User can write custom shader without modifying core code
+- ✅ Shader UI auto-generates from `paramSchema`
+
+---
+
+## Questions for Clarification
+
+Based on your responses:
+
+### 1. **Shader Input Routing** ✅ ANSWERED
+You chose **B) Graph-Based**: Shaders can reference:
+- `base_color` (original voxel color)
+- `previous` (previous shader output)
+- `geometry` (voxel positions)
+- `normals` (face normals)
+- Any named shader output (e.g. `dynamicLight_01`)
+
+**Implementation**: Add `inputFrom` field to shader stack entries.
+
+### 2. **Native Shader Fallback** ✅ ANSWERED
+You chose: **Native tries C++ first, falls back to Lua, errors if neither exists**
+
+**Implementation**: `nativeBridge.renderUnified()` checks shader registry, calls native if available, else calls Lua, else logs error and disables shader.
+
+### 3. **Shader Registration** ✅ ANSWERED
+You chose **C) Auto-register on load** + batch install for user packs
+
+**Implementation**: `shaderStack.loadShaders()` scans folders on startup. User packs install to prefs folder.
+
+### 4. **Backward Compat** ✅ ANSWERED
+You chose **C) Complete refactor with deprecation**
+
+**Implementation**: Auto-migrate old params, show warning, remove legacy code in v2.0.
+
+### 5. **UI Interaction** ✅ ANSWERED
+You chose **B) Separate stacks (Lighting + FX) but with cross-referencing**
+
+**Implementation**: Two collapsible sections in UI. `inputFrom` dropdown shows options from both stacks.
+
+### 6. **Scene Files** ✅ ANSWERED
+You chose **B) Relative paths** + save position/rotation per model (future multi-model scenes)
+
+**Implementation**: Scene JSON stores shader IDs (relative), camera per model (future), icon preview.
+
+### 7. **Shader Execution** ✅ ANSWERED
+You chose **B) Layered** - each shader outputs color+alpha, combine at end
+
+**Implementation**: Lighting shaders multiply colors (additive), FX shaders process sequentially.
+
+### 8. **Rendering API** ✅ ANSWERED
+You chose **B) Per-Face API**
+
+**Implementation**: `shaderData.faces` array with per-face color/normal/depth.
+
+### 9. **UI Generation** ✅ ANSWERED
+You chose **B) Declarative UI from schema** (with opt-out for custom)
+
+**Implementation**: `shader_ui.lua` auto-generates widgets. Shader sets `buildUI` to override.
+
+### 10. **Complexity Warnings** ✅ ANSWERED
+You chose **B) Warn on stack** when total time exceeds threshold
+
+**Implementation**: Profiler measures shader times, shows warning if >100ms for current rotation.
+
+---
+
+## Next Steps
+
+1. **Review this proposal** - Does the Phase 1 plan match your vision? YES
+2. **Approve extraction order** - Start with Basic Light, then Dynamic, then FX
+3. **Confirm UI mockup** - Does the "Shader Stack" tab layout work? YES
+4. **Shader naming** - Any preference changes (e.g. "basic_light_v1" vs "basicLight")? basicLight, version in json manifest
+5. **Priority questions** - Which shaders need native C++ first (Outline? Palette Map)? exactly those two
+
+Once approved, I'll start implementing Phase 1 (Core Infrastructure + Basic Light extraction) as a PR-ready refactor! 🚀
