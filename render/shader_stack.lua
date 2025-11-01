@@ -207,48 +207,25 @@ function shaderStack.execute(shaderData, stackConfig)
   --   }
   -- }
   
-  print("[SHADER_DEBUG] shaderStack.execute called")
-  print("[SHADER_DEBUG]   Input faces:", shaderData and shaderData.faces and #shaderData.faces or "nil")
-  
   if not stackConfig then
     print("[AseVoxel] ERROR: shader_stack.execute called with nil stackConfig!")
     return shaderData
   end
   
-  print("[SHADER_DEBUG]   Lighting shaders:", stackConfig.lighting and #stackConfig.lighting or 0)
-  print("[SHADER_DEBUG]   FX shaders:", stackConfig.fx and #stackConfig.fx or 0)
-  
   local result = shaderData
   
   -- Phase 1: Lighting shaders (top to bottom)
   for i, shaderEntry in ipairs(stackConfig.lighting or {}) do
-    print(string.format("[SHADER_DEBUG]   Processing lighting shader #%d: id=%s, enabled=%s", 
-      i, shaderEntry.id or "nil", tostring(shaderEntry.enabled)))
-    
     if shaderEntry.enabled then
       local shader = shaderStack.registry.lighting[shaderEntry.id]
       if shader and shader.process then
-        print(string.format("[SHADER_DEBUG]     Shader found, params: %s", shaderEntry.params and "present" or "nil"))
-        if shaderEntry.params then
-          for k, v in pairs(shaderEntry.params) do
-            print(string.format("[SHADER_DEBUG]       %s = %s", k, tostring(v)))
-          end
-        end
-        
         -- Route input based on inputFrom parameter
         local inputData = shaderStack.routeInput(result, shaderEntry.inputFrom, shaderData)
-        print(string.format("[SHADER_DEBUG]     Input routed from '%s', faces: %d", 
-          shaderEntry.inputFrom or "unknown", inputData.faces and #inputData.faces or 0))
-        
         result = executeSafely(shader, inputData, shaderEntry.params, shaderEntry.id)
-        print(string.format("[SHADER_DEBUG]     Result faces: %d", result.faces and #result.faces or 0))
       else
         throttledPrint("missing_lighting_" .. (shaderEntry.id or "unknown"), 
                       "[AseVoxel] Warning: Lighting shader not found or has no process function: " .. (shaderEntry.id or "unknown"))
-        print("[SHADER_DEBUG]     ERROR: Shader not found in registry!")
       end
-    else
-      print("[SHADER_DEBUG]     Skipped (disabled)")
     end
   end
   
