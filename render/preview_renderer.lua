@@ -1,11 +1,11 @@
 -- previewRenderer.lua (Consolidated & Cleaned) 
 -- NOTE:
---   - Remote renderer path currently ignores FX Stack (apply locally only).
+--   - Shader Stack System (NEW): Replaces old shadingMode/fxStack/lighting parameters
 --   - Callers should pass:
---       params.fxStack  (data stack: { modules = { ... } })
---       params.shadingMode = "Stack" | "Simple" | "Complete"
---   - We internally use fxStackModule (the module) to call shadeFace().
---   - If you add persistence for fxStack, just store params.fxStack.
+--       params.shaderStack  (modular pipeline: { lighting = { ... }, fx = { ... } })
+--   - If shaderStack is not provided, a default basicLight shader is initialized
+--   - Each shader implements the shader interface (see render/shader_interface.lua)
+--   - Shaders execute in order: lighting shaders → FX shaders
 
 -- Access dependencies through global AseVoxel namespace (lazy loading)
 local function getRotation()
@@ -18,6 +18,10 @@ end
 
 local function getFxStack()
   return AseVoxel.render.fx_stack
+end
+
+local function getShaderStack()
+  return AseVoxel.render.shader_stack
 end
 
 local function getNativeBridge()
@@ -38,7 +42,7 @@ local function _getRemote()
 end
 
 -- Backward compatibility: local variables that use lazy loaders
-local rotation, mathUtils, fxStackModule, nativeBridge, nativeBridge_ok, profiler
+local rotation, mathUtils, fxStackModule, shaderStack, nativeBridge, nativeBridge_ok, profiler
 local fastVisibility, vertexCache -- NEW: optimization modules
 
 local function _initModules()
@@ -46,6 +50,7 @@ local function _initModules()
     rotation = getRotation()
     mathUtils = getMathUtils()
     fxStackModule = getFxStack()
+    shaderStack = getShaderStack()
     profiler = getProfiler()
     fastVisibility = AseVoxel.render.fast_visibility
     vertexCache = AseVoxel.render.vertex_cache
@@ -952,148 +957,117 @@ function previewRenderer.drawPolygon(target, points, color, method, size)
 end
 
 --------------------------------------------------------------------------------
--- Core Shaded Face Drawing (updated for Basic/Dynamic/Stack modes)
+-- Shader Stack System - Initialize default shader stack if none provided
 --------------------------------------------------------------------------------
--- Replaced shadeFaceColor with unified implementation (supports legacy aliases + cache)
-local function shadeFaceColor(faceName, baseColor, params)
-  local shadingMode = params.shadingMode or "Stack"
-  -- Normalize legacy aliases
-  if shadingMode == "Complete" then shadingMode = "Dynamic" end
-  if shadingMode == "Simple" then shadingMode = "Basic" end
-
-  -- None mode: bypass all lighting calculations for performance baseline
-  if shadingMode == "None" then
-    return baseColor
+local function initializeShaderStack(params)
+  if params.shaderStack then
+    return -- Already initialized
   end
-
-  -- Dynamic lighting mode (standalone)
-  if shadingMode == "Dynamic" then
-    -- Accept legacy AND newer field names to avoid silent fallback
-    local lighting = params.lighting
-    -- dynamicLighting (older) vs dyn (newer)
-    local dyn = params.dynamicLighting or params.dyn
-    -- rotatedFaceNormals (older) vs rotatedNormals (alternate path in drawVoxel)
-    local rotatedNormals = params.rotatedFaceNormals or params.rotatedNormals
-    -- Per‑voxel vector name harmonization: lightVector (apex) else fallback to directional dyn.lightDir
-    local L = params.lightVector or (dyn and dyn.lightDir)
-
-    if not lighting then return baseColor end
-
-    -- Primary cache: lighting._cache (choice 1:A). Accept legacy fallbacks.
-    local cache = lighting._cache
-                 or params._dynLightCache
-                 or params.dyn
-                 or params.dynamicLighting
-    if not cache or not cache.rotatedNormals or not cache.lightDir then
-      return baseColor
-    end
-
-    local normal = cache.rotatedNormals[faceName]
-                   or (cache.rotatedFaceNormals and cache.rotatedFaceNormals[faceName])
-    if not normal then return baseColor end
-
-    -- Lambert term
-    local ndotl = normal.x * cache.lightDir.x + normal.y * cache.lightDir.y + normal.z * cache.lightDir.z
-    if ndotl < 0 then ndotl = 0 end
-
-    local exponent = cache.exponent or 1
-    local diffuse = ndotl ^ exponent
-
-    -- Radial attenuation (per-voxel factor set by render loop)
-    local radial = params._radialFactor or 1
-    diffuse = diffuse * radial
-
-    -- Shadow factor (simple placeholder / binary shadow can be added later)
-    local shadow = params.shadowFactor
-    if shadow == nil then shadow = 1 end
-    diffuse = diffuse * shadow
-
-    local baseR = baseColor.red or baseColor.r or 255
-    local baseG = baseColor.green or baseColor.g or 255
-    local baseB = baseColor.blue or baseColor.b or 255
-
-    local lc = cache.lightColor or {r=1,g=1,b=1}
-    local lr, lg, lb = (lc.r or 1), (lc.g or 1), (lc.b or 1)
-    local ambient = cache.ambient or 0
-
-    local r = baseR * (ambient + diffuse * lr)
-    local g = baseG * (ambient + diffuse * lg)
-    local b = baseB * (ambient + diffuse * lb)
-
-    -- Rim: silhouette smoothstep (choice 4:A)
-    if lighting.rimEnabled and cache.viewDir then
-      local V = cache.viewDir
-      local ndotv = normal.x * V.x + normal.y * V.y + normal.z * V.z
-      if ndotv > 0 then
-        local edge = 1 - ndotv
-        local rimStart, rimEnd = 0.55, 0.95
-        local t = 0
-        if edge <= rimStart then
-          t = 0
-        elseif edge >= rimEnd then
-          t = 1
-        else
-          local tt = (edge - rimStart) / (rimEnd - rimStart)
-          t = tt*tt*(3 - 2*tt)
-        end
-        if t > 0 then
-          local rimStrength = 0.6 -- Patch 1: rimStrength fixed (deprecated control)
-          local rim = rimStrength * t
-          r = r + lr * rim * 255
-          g = g + lg * rim * 255
-          b = b + rimStrength * rim * 255
-        end
-      end
-    end
-
-    r = (r < 0 and 0) or (r > 255 and 255 or math.floor(r + 0.5))
-    g = (g < 0 and 0) or (g > 255 and 255 or math.floor(g + 0.5))
-    b = (b < 0 and 0) or (b > 255 and 255 or math.floor(b + 0.5))
-    return Color(r, g, b, baseColor.alpha or baseColor.a or 255)
-  end
-
-  -- Basic mode (renamed)
-  if shadingMode == "Basic" then
-    local M = params._rotationMatrixForFX
-    if not M then
-      M = mathUtils.createRotationMatrix(params.xRotation or 0, params.yRotation or 0, params.zRotation or 0)
-      params._rotationMatrixForFX = M
-    end
-    params.viewDir = params.viewDir or {x=0,y=0,z=1}
-    local vd = params.viewDir
-    local mag = math.sqrt(vd.x*vd.x+vd.y*vd.y+vd.z*vd.z)
-    if mag > 1e-6 then vd.x,vd.y,vd.z = vd.x/mag, vd.y/mag, vd.z/mag end
-    local b = basicModeBrightness(faceName, M, {vd.x,vd.y,vd.z}, params)
-    local r = math.floor((baseColor.red or baseColor.r) * b + 0.5)
-    local g = math.floor((baseColor.green or baseColor.g) * b + 0.5)
-    local bl = math.floor((baseColor.blue or baseColor.b) * b + 0.5)
-    return Color(r,g,bl, baseColor.alpha or baseColor.a or 255)
-  end
-
-  -- Stack mode (FX)
-  if shadingMode == "Stack" and params.fxStack and params.fxStack.modules and #params.fxStack.modules > 0 then
-    if not params._rotationMatrixForFX then
-      params._rotationMatrixForFX =
-        mathUtils.createRotationMatrix(params.xRotation or 0, params.yRotation or 0, params.zRotation or 0)
-    end
-    params.viewDir = params.viewDir or {x=0,y=0,z=1}
-    local shaded = fxStackModule.shadeFace({
-        rotationMatrix = params._rotationMatrixForFX,
-        viewDir = params.viewDir,
-        fxStack = params.fxStack
-      },
-      faceName,
+  
+  -- Create default shader stack based on current settings
+  -- This provides backward compatibility and sensible defaults
+  params.shaderStack = {
+    lighting = {
       {
-        r = baseColor.red or baseColor.r,
-        g = baseColor.green or baseColor.g,
-        b = baseColor.blue or baseColor.b,
-        a = baseColor.alpha or baseColor.a or 255
+        id = "basicLight",
+        enabled = true,
+        params = {
+          lightIntensity = 80,
+          shadeIntensity = 40
+        },
+        inputFrom = "base_color"
       }
-    )
-    return Color(shaded.r, shaded.g, shaded.b, shaded.a)
-  end
+    },
+    fx = {}
+  }
+end
 
+-- Apply shader stack to a single face
+local function applyShaderStackToFace(faceName, baseColor, params, rotationMatrix, viewDir, normal)
+  if not shaderStack then
+    return baseColor -- Fallback if shader stack module not loaded
+  end
+  
+  -- Build shaderData structure for this face
+  local shaderData = {
+    faces = {
+      {
+        voxel = {x = 0, y = 0, z = 0}, -- Position not used for single-face shading
+        face = faceName,
+        normal = normal or {x = 0, y = 1, z = 0},
+        color = {
+          r = baseColor.red or baseColor.r or 255,
+          g = baseColor.green or baseColor.g or 255,
+          b = baseColor.blue or baseColor.b or 255,
+          a = baseColor.alpha or baseColor.a or 255
+        }
+      }
+    },
+    camera = {
+      position = params.cameraPosition or {x = 0, y = 0, z = 10},
+      direction = viewDir or {x = 0, y = 0, z = -1}
+    },
+    middlePoint = params.middlePoint or {x = 0, y = 0, z = 0},
+    width = params.width or 400,
+    height = params.height or 400,
+    voxelSize = params.scale or 1
+  }
+  
+  -- Execute shader stack
+  local result = shaderStack.execute(shaderData, params.shaderStack)
+  
+  -- Extract result color
+  if result and result.faces and result.faces[1] and result.faces[1].color then
+    local c = result.faces[1].color
+    return Color(c.r, c.g, c.b, c.a)
+  end
+  
   return baseColor
+end
+
+--------------------------------------------------------------------------------
+-- Core Shaded Face Drawing (REPLACED WITH SHADER STACK)
+--------------------------------------------------------------------------------
+-- NEW: shadeFaceColor now uses the shader stack system exclusively
+local function shadeFaceColor(faceName, baseColor, params)
+  -- Ensure shader stack is initialized
+  if not params.shaderStack then
+    initializeShaderStack(params)
+  end
+  
+  -- Get rotation matrix and view direction for shader processing
+  local M = params._rotationMatrixForFX
+  if not M then
+    M = mathUtils.createRotationMatrix(params.xRotation or 0, params.yRotation or 0, params.zRotation or 0)
+    params._rotationMatrixForFX = M
+  end
+  
+  local viewDir = params.viewDir or {x=0,y=0,z=1}
+  local vd = viewDir
+  local mag = math.sqrt(vd.x*vd.x+vd.y*vd.y+vd.z*vd.z)
+  if mag > 1e-6 then 
+    vd = {x=vd.x/mag, y=vd.y/mag, z=vd.z/mag}
+  end
+  
+  -- Get face normal (rotated to camera space)
+  local n = FACE_NORMALS[faceName]
+  local normal = {x=0, y=1, z=0}
+  if n then
+    normal = {
+      x = M[1][1]*n[1] + M[1][2]*n[2] + M[1][3]*n[3],
+      y = M[2][1]*n[1] + M[2][2]*n[2] + M[2][3]*n[3],
+      z = M[3][1]*n[1] + M[3][2]*n[2] + M[3][3]*n[3]
+    }
+    local nmag = math.sqrt(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z)
+    if nmag > 1e-6 then
+      normal.x = normal.x / nmag
+      normal.y = normal.y / nmag
+      normal.z = normal.z / nmag
+    end
+  end
+  
+  -- Apply shader stack
+  return applyShaderStackToFace(faceName, baseColor, params, M, vd, normal)
 end
 
 -- Updated drawVoxel to apply true perspective (FOV-based) projection.
@@ -1247,7 +1221,8 @@ function previewRenderer.renderPreview(model, params)
   params.width     = params.width or 200
   params.height    = params.height or 200
   params.orthogonal = params.orthogonal or false
-  params.shadingMode = params.shadingMode or "Stack"
+  -- Initialize shader stack if not present
+  initializeShaderStack(params)
 
   local outW, outH = params.width, params.height
   local ss = 1
@@ -1435,99 +1410,7 @@ function previewRenderer.renderPreview(model, params)
   end
   if enableProfiling and profiler then profiler.measure("precompute_visibility") end
 
-  -- Patch 3: Build unified dynamic lighting cache inside params.lighting._cache
-  if params.shadingMode == "Dynamic" and params.lighting then
-    if enableProfiling and profiler then profiler.mark("lighting_cache") end
-    local L = params.lighting
-
-    -- Compute camera-space light direction from yaw/pitch (camera-fixed)
-    local camLight = computeLightDirection(L.yaw or 25, L.pitch or 25)
-    local camMag = math.sqrt(camLight.x*camLight.x + camLight.y*camLight.y + camLight.z*camLight.z)
-    if camMag > 1e-6 then camLight.x, camLight.y, camLight.z = camLight.x/camMag, camLight.y/camMag, camLight.z/camMag
-    else camLight = {x=0,y=0,z=1} end
-
-    -- Base exponent from diffuse (lerp 5..1)
-    local diffPct = (L.diffuse or 60)/100
-    -- Patch 1: directionality removed; exponent depends only on diffuse (5 -> 1)
-    local exponent = 5 - 4 * diffPct
-    if exponent < 0.2 then exponent = 0.2 end
-
-    -- Ambient legacy curve
-    local ambientPct = (L.ambient or 30)/100
-    local ambient = 0.02 + 0.48 * ambientPct
-
-    -- Light color normalized
-    local lc = L.lightColor or Color(255,255,255)
-    local lightColor = {
-      r = (lc.red or lc.r or 255)/255,
-      g = (lc.green or lc.g or 255)/255,
-      b = (lc.blue or lc.b or 255)/255
-    }
-
-    -- Rotation matrix for model (used to map camera-space light into model-space)
-    local rotM = mathUtils.createRotationMatrix(params.xRotation or 0, params.yRotation or 0, params.zRotation or 0)
-    local rotatedNormals = cacheRotatedNormals(rotM)
-
-    -- Convert camera-space light into model-space for geometry needs (cone axis, radial attenuation).
-    -- However: rotatedNormals were computed as R * n (camera-space). For correct shading we must
-    -- compute ndotl in the same space — so keep camLight (camera-space) for shading and store
-    -- the model-space vector separately for geometry.
-    local inv = mathUtils.transposeMatrix(rotM)
-    local lightModel = {
-      x = inv[1][1] * camLight.x + inv[1][2] * camLight.y + inv[1][3] * camLight.z,
-      y = inv[2][1] * camLight.x + inv[2][2] * camLight.y + inv[2][3] * camLight.z,
-      z = inv[3][1] * camLight.x + inv[3][2] * camLight.y + inv[3][3] * camLight.z
-    }
-    local lm = math.sqrt(lightModel.x*lightModel.x + lightModel.y*lightModel.y + lightModel.z*lightModel.z)
-    if lm > 1e-6 then lightModel.x, lightModel.y, lightModel.z = lightModel.x/lm, lightModel.y/lm, lightModel.z/lm
-    else lightModel = {x=0,y=0,z=1} end
-
-    -- Model geometry helpers for radial attenuation (diameter interpreted relative to model radius)
-    local diag = math.sqrt(modelWidth*modelWidth + modelHeight*modelHeight + modelDepth*modelDepth)
-    local modelRadius = 0.5 * diag
-    local diaPct = (L.diameter or 100)/100
-    local baseRadius = math.max(0, diaPct * modelRadius)
-    local coreRadius = baseRadius * math.max(0, (1 - 0.4 * diffPct))
-
-    -- Compute rim distance from center so rim points lie on bounding sphere
-    local rimDistFromCenter = 0
-    local S = modelRadius
-    if baseRadius >= S then
-      rimDistFromCenter = 0
-      baseRadius = math.min(baseRadius, S * 0.999)
-    else
-      rimDistFromCenter = math.sqrt(math.max(0, S*S - baseRadius*baseRadius))
-    end
-
-    -- Axis in model space (points from center toward light)
-    local axisModel = { x = lightModel.x, y = lightModel.y, z = lightModel.z }
-
-    -- Populate the unified cache inside lighting table
-    L._cache = {
-      -- Use camera-space direction for shading (rotatedNormals are camera-space).
-      lightDir = camLight,             -- camera-space light direction (used for ndotl)
-      lightModel = lightModel,         -- model-space light direction (keep for cone/geometry)          -- model-space light direction
-      exponent = exponent,
-      ambient = ambient,
-      lightColor = lightColor,
-      rotatedNormals = rotatedNormals,
-      viewDir = {x=0,y=0,z=1},
-      modelCenter = {x=middlePoint.x, y=middlePoint.y, z=middlePoint.z},
-      modelRadius = modelRadius,
-      baseRadius = baseRadius,
-      coreRadius = coreRadius,
-      rimDistFromCenter = rimDistFromCenter,
-      axis = axisModel
-    }
-    -- Backwards-compat exports
-    params._dynLightCache = L._cache
-    params.dyn = params.dyn or L._cache
-    params.dynamicLighting = params.dynamicLighting or L._cache
-    if enableProfiling and profiler then profiler.measure("lighting_cache") end
-  else
-    if params.lighting then params.lighting._cache = nil end
-    params._dynLightCache = nil
-  end
+  -- Shader stack is now initialized - no need for old lighting cache
 
   -- Main voxel draw loop
   if enableProfiling and profiler then profiler.mark("draw_loop") end
@@ -1580,41 +1463,6 @@ function previewRenderer.renderPreview(model, params)
       end
       _metrics.facesDrawn = _metrics.facesDrawn + drawCount
       _metrics.polygonsFilled = _metrics.polygonsFilled + drawCount
-    end
-
-    -- Dynamic per-voxel: radial attenuation & simple shadow placeholder
-    if params.shadingMode == "Dynamic" and params.lighting and params.lighting._cache then
-      local cache = params.lighting._cache
-      -- Compute perpendicular distance from voxel to the light axis (axis passes through model center)
-      local vx = v.x - cache.modelCenter.x
-      local vy = v.y - cache.modelCenter.y
-      local vz = v.z - cache.modelCenter.z
-      local ax, ay, az = cache.axis.x, cache.axis.y, cache.axis.z
-      -- projection length along axis
-      local proj = vx*ax + vy*ay + vz*az
-      -- perpendicular vector = v - proj*axis
-      local px = vx - proj*ax
-      local py = vy - proj*ay
-      local pz = vz - proj*az
-      local perpDist = math.sqrt(px*px + py*py + pz*pz)
-
-      local radial = 1
-      local diameterRadius = cache.baseRadius or 0.0001
-      if diameterRadius and diameterRadius > 1e-6 then
-        if perpDist <= cache.coreRadius then
-          radial = 1
-        elseif perpDist >= diameterRadius then
-          radial = 0
-        else
-          local t = (perpDist - cache.coreRadius) / (diameterRadius - cache.coreRadius)
-          radial = 1 - (t*t*(3 - 2*t)) -- inverted smoothstep
-        end
-      end
-      params._radialFactor = radial
-      params.shadowFactor = 1
-    elseif params.shadingMode == "Dynamic" then
-      params._radialFactor = 1
-      params.shadowFactor = 1
     end
 
     local sx = centerX + (tv.x - middlePoint.x) * voxelSize
@@ -1671,6 +1519,10 @@ end
 function previewRenderer.renderVoxelModel(model, params)
   _initModules()  -- Initialize lazy-loaded modules
   params = params or {}
+  
+  -- Ensure shader stack is initialized
+  initializeShaderStack(params)
+  
   local _metrics = params.metrics
   
   -- NEW: Start profiling at top level (covers all render paths)
@@ -1715,62 +1567,32 @@ function previewRenderer.renderVoxelModel(model, params)
       xRotation = xRot, yRotation = yRot, zRotation = zRot,
       scale = scale,
       orthogonal = params.orthogonal or params.orthogonalView or false,
-      basicShadeIntensity = params.basicShadeIntensity or 50,
-      basicLightIntensity = params.basicLightIntensity or 50,
       fovDegrees = params.fovDegrees or params.fov,
       perspectiveScaleRef = params.perspectiveScaleRef or "middle",
       backgroundColor = bg and {
         r = bg.red or bg.r, g = bg.green or bg.g, b = bg.blue or bg.b, a = bg.alpha or bg.a
-      } or {r=0,g=0,b=0,a=0}
+      } or {r=0,g=0,b=0,a=0},
+      shaderStack = params.shaderStack  -- Pass shader stack to native renderer
     }
-    -- Dynamic lighting param packaging (only when needed)
-    if params.shadingMode == "Dynamic" and params.lighting then
-      local lc = params.lighting.lightColor or Color(255,255,255)
-      nativeParams.lighting = {
-        pitch      = params.lighting.pitch or 0,
-        yaw        = params.lighting.yaw or 0,
-        diffuse    = params.lighting.diffuse or 60,
-        diameter   = params.lighting.diameter or 100,
-        ambient    = params.lighting.ambient or 30,
-        rimEnabled = params.lighting.rimEnabled and true or false,
-        lightColor = {
-          r = lc.red or lc.r or 255,
-          g = lc.green or lc.g or 255,
-          b = lc.blue or lc.b or 255
-        }
-      }
-    end
+    
     local nativeResult
     
     -- Profile native rendering
     if enableProfiling and profiler then
-      profiler.mark("native_flatten_and_setup")
+      profiler.mark("native_render_shader_stack")
     end
     
-    if params.shadingMode == "Stack" and nativeBridge.renderStack then
-      nativeParams.fxStack = params.fxStack
-      if enableProfiling and profiler then
-        profiler.measure("native_flatten_and_setup")
-        profiler.mark("native_render_stack")
-      end
+    -- Use unified shader stack renderer (or fallback if not available)
+    if nativeBridge.renderShaderStack then
+      nativeResult = nativeBridge.renderShaderStack(flat, nativeParams)
+    elseif nativeBridge.renderStack then
+      -- Fallback: use old Stack renderer as compatibility layer
+      nativeParams.fxStack = params.fxStack  -- Legacy parameter
       nativeResult = nativeBridge.renderStack(flat, nativeParams)
-      if enableProfiling and profiler then
-        profiler.measure("native_render_stack")
-      end
-    elseif params.shadingMode == "Dynamic" and nativeBridge.renderDynamic then
-      if enableProfiling and profiler then
-        profiler.measure("native_flatten_and_setup")
-        profiler.mark("native_render_dynamic")
-      end
-      nativeResult = nativeBridge.renderDynamic(flat, nativeParams)
-      if enableProfiling and profiler then
-        profiler.measure("native_render_dynamic")
-      end
     else
-      if enableProfiling and profiler then
-        profiler.measure("native_flatten_and_setup")
-        profiler.mark("native_render_basic")
-      end
+      -- Ultimate fallback: use basic renderer
+      nativeParams.basicShadeIntensity = 50
+      nativeParams.basicLightIntensity = 50
       nativeResult = nativeBridge.renderBasic(flat, nativeParams)
       if enableProfiling and profiler then
         profiler.measure("native_render_basic")
@@ -1806,14 +1628,8 @@ function previewRenderer.renderVoxelModel(model, params)
         end
         
         if _metrics then
-          if params.shadingMode=="Stack" then
-            _metrics.backend = "native-stack"
-          elseif params.shadingMode=="Dynamic" then
-            _metrics.backend = "native-dynamic"
-          else
-            _metrics.backend = "native-basic"
-          end
-         end
+          _metrics.backend = "native-shader-stack"
+        end
         return img
       else
         print("[asevoxel-native] native buffer mismatch (fallback)")
@@ -1894,9 +1710,7 @@ function previewRenderer.renderVoxelModel(model, params)
     fovDegrees = params.fovDegrees or params.fov or (params.depthPerspective and (5 + (75-5)*(params.depthPerspective/100))) or nil,
     -- NEW: forward perspective scale reference to renderer
     perspectiveScaleRef = params.perspectiveScaleRef or "middle",
-    fxStack = params.fxStack,
-    shadingMode = params.shadingMode or "Stack",
-    lighting = params.lighting,
+    shaderStack = params.shaderStack,  -- Pass shader stack (replaces fxStack + shadingMode + lighting)
     metrics = _metrics,
     enableProfiling = enableProfiling,  -- NEW: Pass profiling flag to renderPreview
   })

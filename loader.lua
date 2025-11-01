@@ -110,10 +110,15 @@ AseVoxel.render.mesh_pipeline = loadModule("render" .. sep .. "mesh_pipeline")
 AseVoxel.render.geometry_pipeline = loadModule("render" .. sep .. "geometry_pipeline")
 AseVoxel.render.canvas_renderer = loadModule("render" .. sep .. "canvas_renderer")
 
+-- Shader stack system (NEW)
+AseVoxel.render.shader_interface = loadModule("render" .. sep .. "shader_interface")
+AseVoxel.render.shader_stack = loadModule("render" .. sep .. "shader_stack")
+AseVoxel.render.shader_ui = loadModule("render" .. sep .. "shader_ui")
+
 -- Main preview renderer coordination module
 AseVoxel.render.preview_renderer = loadModule("render" .. sep .. "preview_renderer")
 
-print("[AseVoxel] Layer 2 complete: rendering modules")
+print("[AseVoxel] Layer 2 complete: rendering modules + shader stack")
 
 --------------------------------------------------------------------------------
 -- Layer 3: File I/O
@@ -191,6 +196,8 @@ print("[AseVoxel] Layer 6 complete: UI dialogs")
 -- Create convenience namespaces for modules
 AseVoxel.rotation = AseVoxel.math.rotation
 AseVoxel.fxStack = AseVoxel.render.fx_stack
+AseVoxel.shaderStack = AseVoxel.render.shader_stack
+AseVoxel.shaderUI = AseVoxel.render.shader_ui
 AseVoxel.meshBuilder = AseVoxel.render.mesh_builder
 AseVoxel.meshRenderer = AseVoxel.render.mesh_renderer
 AseVoxel.meshPipeline = AseVoxel.render.mesh_pipeline

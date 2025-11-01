@@ -26,6 +26,14 @@ local function getFxStackDialog()
   return AseVoxel.dialog.fx_stack_dialog
 end
 
+local function getShaderStack()
+  return AseVoxel.render.shader_stack
+end
+
+local function getShaderUI()
+  return AseVoxel.render.shader_ui
+end
+
 local function getMathUtils()
   return AseVoxel.mathUtils
 end
@@ -611,331 +619,474 @@ function mainDialog.create(viewParams, schedulePreview, rotateModel, updateLayer
   }
   mainDlg:newrow()
   
-  -- Create the FX tab
+  -- Shader Stack Testing
+  mainDlg:separator{ text = "Shader Stack Testing" }
+  mainDlg:button{
+    id = "testShaderStack",
+    text = "Test Shader Stack",
+    onclick = function()
+      local shaderStack = getShaderStack()
+      if not shaderStack then
+        app.alert("Shader stack module not loaded!")
+        return
+      end
+      
+      -- Gather test results
+      local results = {}
+      table.insert(results, "=== Shader Stack Test ===\n")
+      
+      -- Test 1: Module loaded
+      table.insert(results, "✓ Shader stack module loaded")
+      
+      -- Test 2: List available shaders
+      local availableLighting = shaderStack.listShaders("lighting")
+      local availableFX = shaderStack.listShaders("fx")
+      table.insert(results, string.format("✓ Found %d lighting shaders", #availableLighting))
+      table.insert(results, string.format("✓ Found %d FX shaders", #availableFX))
+      
+      -- Test 3: Current configuration
+      if viewParams.shaderStack then
+        table.insert(results, string.format("✓ Current config: %d lighting, %d FX", 
+          #viewParams.shaderStack.lighting, #viewParams.shaderStack.fx))
+      else
+        table.insert(results, "⚠ No shader stack configured")
+      end
+      
+      -- Test 4: Try to load each shader
+      local errors = {}
+      for _, info in ipairs(availableLighting) do
+        local shader = shaderStack.getShader(info.id)
+        if shader and shader.info and shader.process then
+          -- OK
+        else
+          table.insert(errors, "Lighting shader '" .. info.id .. "' invalid")
+        end
+      end
+      for _, info in ipairs(availableFX) do
+        local shader = shaderStack.getShader(info.id)
+        if shader and shader.info and shader.process then
+          -- OK
+        else
+          table.insert(errors, "FX shader '" .. info.id .. "' invalid")
+        end
+      end
+      
+      if #errors == 0 then
+        table.insert(results, "✓ All shaders valid")
+      else
+        for _, err in ipairs(errors) do
+          table.insert(results, "✗ " .. err)
+        end
+      end
+      
+      -- Display results
+      local resultText = table.concat(results, "\n")
+      local dlg = Dialog("Shader Stack Test Results")
+      for line in resultText:gmatch("[^\n]+") do
+        dlg:label{ text = line }
+        dlg:newrow()
+      end
+      dlg:button{ text = "Close" }
+      dlg:show()
+    end
+  }
+  
+  mainDlg:button{
+    id = "testRenderingPipeline",
+    text = "Test Full Pipeline",
+    onclick = function()
+      -- Test full rendering with current shader stack
+      local sprite = app.activeSprite
+      if not sprite then
+        app.alert("Open a sprite first!")
+        return
+      end
+      
+      local startTime = os.clock()
+      schedulePreview(true, "pipeline_test")
+      local endTime = os.clock()
+      
+      app.alert(string.format("Pipeline test complete!\nRender time: %.0f ms", 
+        (endTime - startTime) * 1000))
+    end
+  }
+  
+  mainDlg:button{
+    id = "resetToDefault",
+    text = "Reset to Default Shader",
+    onclick = function()
+      viewParams.shaderStack = {
+        lighting = {
+          { id = "basic", params = { lightIntensity = 50, shadeIntensity = 50 } }
+        },
+        fx = {}
+      }
+      schedulePreview(false, "reset_to_default")
+      app.alert("Reset to default basicLight shader")
+    end
+  }
+  mainDlg:newrow()
+  
+  -- Create the Lighting Shaders tab
+  mainDlg:tab{
+    id = "lightingTab",
+    text = "Lighting"
+  }
+  
+  mainDlg:separator{ text="Lighting Shaders" }
+  
+  -- Initialize shader stack if not present
+  if not viewParams.shaderStack then
+    viewParams.shaderStack = {
+      lighting = {},
+      fx = {}
+    }
+  end
+  
+  local shaderStack = getShaderStack()
+  local shaderUI = getShaderUI()
+  
+  -- Refresh function to rebuild shader list
+  local function refreshLightingList()
+    mainDlg:modify{ id="lightingList", text=getLightingListText() }
+  end
+  
+  -- Get lighting shader list text
+  function getLightingListText()
+    local text = "Lighting Shaders:\n"
+    if #viewParams.shaderStack.lighting == 0 then
+      text = text .. "  (none - using default)\n"
+    else
+      for i, shader in ipairs(viewParams.shaderStack.lighting) do
+        text = text .. string.format("  %d. %s\n", i, shader.id)
+      end
+    end
+    return text
+  end
+  
+  mainDlg:label{
+    id = "lightingList",
+    text = getLightingListText()
+  }
+  
+  mainDlg:newrow()
+  mainDlg:button{
+    id = "addLightingShader",
+    text = "Add Lighting Shader...",
+    onclick = function()
+      if not shaderStack then return end
+      
+      -- Get available lighting shaders
+      local availableShaders = shaderStack.listShaders("lighting")
+      if not availableShaders or #availableShaders == 0 then
+        app.alert("No lighting shaders available!")
+        return
+      end
+      
+      -- Build options list
+      local options = {}
+      for _, shaderInfo in ipairs(availableShaders) do
+        table.insert(options, shaderInfo.info.name .. " (" .. shaderInfo.id .. ")")
+      end
+      
+      -- Show selection dialog
+      local selDlg = Dialog("Add Lighting Shader")
+      selDlg:combobox{
+        id = "shaderChoice",
+        label = "Shader:",
+        option = options[1],
+        options = options
+      }
+      selDlg:button{
+        text = "Add",
+        onclick = function()
+          local choice = selDlg.data.shaderChoice
+          -- Extract shader ID from "Name (id)" format
+          local shaderId = choice:match("%((.+)%)")
+          
+          if shaderId then
+            -- Get shader module
+            local shader = shaderStack.getShader(shaderId)
+            if shader then
+              -- Create default params
+              local defaultParams = {}
+              if shader.paramSchema then
+                for _, param in ipairs(shader.paramSchema) do
+                  defaultParams[param.name] = param.default
+                end
+              end
+              
+              -- Add to stack
+              table.insert(viewParams.shaderStack.lighting, {
+                id = shaderId,
+                params = defaultParams
+              })
+              
+              refreshLightingList()
+              schedulePreview(false, "lighting_shader_added")
+            end
+          end
+          
+          selDlg:close()
+        end
+      }
+      selDlg:button{ text = "Cancel" }
+      selDlg:show()
+    end
+  }
+  
+  mainDlg:button{
+    id = "configureLighting",
+    text = "Configure Shaders...",
+    onclick = function()
+      if #viewParams.shaderStack.lighting == 0 then
+        app.alert("No lighting shaders to configure!\nAdd a shader first.")
+        return
+      end
+      
+      -- Open configuration dialog
+      local cfgDlg = Dialog("Configure Lighting Shaders")
+      
+      for i, shaderConfig in ipairs(viewParams.shaderStack.lighting) do
+        local shader = shaderStack.getShader(shaderConfig.id)
+        if shader then
+          cfgDlg:separator{ text = string.format("%d. %s", i, shader.info.name) }
+          
+          -- Move up/down/remove buttons
+          cfgDlg:button{
+            text = "↑",
+            onclick = function()
+              if i > 1 then
+                viewParams.shaderStack.lighting[i], viewParams.shaderStack.lighting[i-1] = 
+                  viewParams.shaderStack.lighting[i-1], viewParams.shaderStack.lighting[i]
+                cfgDlg:close()
+                schedulePreview(false, "lighting_reorder")
+                refreshLightingList()
+              end
+            end
+          }
+          cfgDlg:button{
+            text = "↓",
+            onclick = function()
+              if i < #viewParams.shaderStack.lighting then
+                viewParams.shaderStack.lighting[i], viewParams.shaderStack.lighting[i+1] = 
+                  viewParams.shaderStack.lighting[i+1], viewParams.shaderStack.lighting[i]
+                cfgDlg:close()
+                schedulePreview(false, "lighting_reorder")
+                refreshLightingList()
+              end
+            end
+          }
+          cfgDlg:button{
+            text = "Remove",
+            onclick = function()
+              table.remove(viewParams.shaderStack.lighting, i)
+              cfgDlg:close()
+              schedulePreview(false, "lighting_removed")
+              refreshLightingList()
+            end
+          }
+          
+          cfgDlg:newrow()
+          
+          -- Build parameter UI
+          if shaderUI then
+            shaderUI.buildShaderUI(cfgDlg, shader, shaderConfig.params, function(paramName, newValue)
+              shaderConfig.params[paramName] = newValue
+              schedulePreview(false, "lighting_param_change")
+            end)
+          end
+        end
+      end
+      
+      cfgDlg:button{ text = "Close" }
+      cfgDlg:show()
+    end
+  }
+  
+  mainDlg:button{
+    id = "clearLightingShaders",
+    text = "Clear All",
+    onclick = function()
+      viewParams.shaderStack.lighting = {}
+      refreshLightingList()
+      schedulePreview(false, "lighting_cleared")
+    end
+  }
+  
+  -- Create the FX Shaders tab
   mainDlg:tab{
     id = "fxTab",
     text = "FX"
   }
-
-  mainDlg:separator{ text="Shading / FX" }
-
-  -- Migration logic for legacy shading modes and parameters
-  local function migrateViewParams()
-    -- Migrate Simple -> Basic
-    if viewParams.shadingMode == "Simple" then
-      viewParams.shadingMode = "Basic"
-    end
-    -- Migrate Complete -> Dynamic
-    if viewParams.shadingMode == "Complete" then
-      viewParams.shadingMode = "Dynamic"
-    end
-    
-    -- Migrate intensity parameter names
-    if viewParams.simpleShadeIntensity then
-      viewParams.basicShadeIntensity = viewParams.simpleShadeIntensity
-      viewParams.simpleShadeIntensity = nil
-    end
-    if viewParams.simpleLightIntensity then
-      viewParams.basicLightIntensity = viewParams.simpleLightIntensity
-      viewParams.simpleLightIntensity = nil
-    end
-    
-    -- Remove legacy rainbowShading parameter
-    viewParams.rainbowShading = nil
-    
-    -- Initialize lighting table if missing
-    if not viewParams.lighting then
-      viewParams.lighting = {
-        pitch = 25,
-        yaw = 25,
-        diffuse = 60,
-        diameter = 100,
-        ambient = 30,
-        lightColor = Color(255, 255, 255),
-        rimEnabled = true,
-        previewRotateEnabled = false
-      }
-    end
-    
-    -- Strip deprecated fields
-    if viewParams.lighting then
-      viewParams.lighting.directionality = nil
-      viewParams.lighting.rimStrength = nil
-    end
+  
+  mainDlg:separator{ text="FX Shaders" }
+  
+  -- Refresh function for FX list
+  local function refreshFXList()
+    mainDlg:modify{ id="fxList", text=getFXListText() }
   end
   
-  -- Apply migration
-  migrateViewParams()
-
-  -- Modified shadingMode combobox with proper value handling
-  mainDlg:combobox{
-    id="shadingMode",
-    label="Mode:",
-    option=viewParams.shadingMode,
-    options={"None","Basic","Dynamic","Stack"},
-    onchange=function()
-      viewParams.shadingMode = mainDlg.data.shadingMode
-      
-      -- Show/hide controls based on mode
-      local showBasicControls = viewParams.shadingMode == "Basic"
-      local showDynamicControls = viewParams.shadingMode == "Dynamic"
-      local showStackControls = viewParams.shadingMode == "Stack"
-
-      -- Basic controls
-      mainDlg:modify{id="basicControlsLabel", visible=showBasicControls}
-      mainDlg:modify{id="shadeIntensity", visible=showBasicControls}
-      mainDlg:modify{id="lightIntensity", visible=showBasicControls}
-
-      -- Stack controls
-      mainDlg:modify{id="openFXStack", visible=showStackControls}
-
-      -- Dynamic controls
-      mainDlg:modify{id="dynamicControlsLabel", visible=showDynamicControls}
-      mainDlg:modify{id="pitchSlider", visible=showDynamicControls}
-      mainDlg:modify{id="yawSlider", visible=showDynamicControls}
-      mainDlg:modify{id="diffuseSlider", visible=showDynamicControls}
-      mainDlg:modify{id="diameterSlider", visible=showDynamicControls}
-      mainDlg:modify{id="ambientSlider", visible=showDynamicControls}
-      mainDlg:modify{id="lightColorPicker", visible=showDynamicControls}
-      mainDlg:modify{id="rimEnabledCheck", visible=showDynamicControls}
-      mainDlg:modify{id="previewRotateCheck", visible=showDynamicControls}
-      mainDlg:modify{id="resetLightButton", visible=showDynamicControls}
-      -- Removed: directionalitySlider, rimStrengthSlider, showLightCone, coneLength, coneSamples, coneHint
-
-      -- Initialize values if needed for Basic mode
-      if viewParams.shadingMode == "Basic" then
-        -- Important: Make sure viewParams values are initialized properly
-        if viewParams.basicShadeIntensity == nil then viewParams.basicShadeIntensity = 50 end
-        if viewParams.basicLightIntensity == nil then viewParams.basicLightIntensity = 50 end
-        
-        -- Update slider values
-        mainDlg:modify{id="shadeIntensity", value=viewParams.basicShadeIntensity}
-        mainDlg:modify{id="lightIntensity", value=viewParams.basicLightIntensity}
-      end
-      
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
-    end
-  }
-  
-  -- Basic controls
-  mainDlg:separator{
-    id = "basicControlsLabel",
-    text = "Basic Shading Controls",
-    visible = (viewParams.shadingMode == "Basic")
-  }
-  
-  mainDlg:slider{
-    id = "shadeIntensity",
-    label = "Shading Intensity",
-    min = 1,
-    max = 100,
-    value = viewParams.basicShadeIntensity or 50,
-    visible = (viewParams.shadingMode == "Basic"),
-    onchange = function()
-      viewParams.basicShadeIntensity = mainDlg.data.shadeIntensity
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
-    end
-  }
-  
-  mainDlg:slider{
-    id = "lightIntensity",
-    label = "Light Intensity",
-    min = 0,
-    max = 100,
-    value = viewParams.basicLightIntensity or 50,
-    visible = (viewParams.shadingMode == "Basic"),
-    onchange = function()
-      viewParams.basicLightIntensity = mainDlg.data.lightIntensity
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
-    end
-  }
-  
-  -- Dynamic controls
-  mainDlg:separator{
-    id = "dynamicControlsLabel",
-    text = "Dynamic Lighting Controls",
-    visible = (viewParams.shadingMode == "Dynamic")
-  }
-  
-  mainDlg:slider{
-    id = "pitchSlider",
-    label = "Pitch",
-    min = 0,
-    max = 359,
-    value = viewParams.lighting.pitch,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      viewParams.lighting.pitch = mainDlg.data.pitchSlider
-      viewParams._lastPitchYawChangeTime = os.clock()
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
-    end
-  }
-  
-  mainDlg:slider{
-    id = "yawSlider", 
-    label = "Yaw",
-    min = 0,
-    max = 359,
-    value = viewParams.lighting.yaw,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      viewParams.lighting.yaw = mainDlg.data.yawSlider
-      viewParams._lastPitchYawChangeTime = os.clock()
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
-    end
-  }
-  
-  mainDlg:slider{
-    id = "diffuseSlider",
-    label = "Diffuse %",
-    min = 0, max = 100,
-    value = viewParams.lighting.diffuse,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      viewParams.lighting.diffuse = mainDlg.data.diffuseSlider
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "controls")
-    end
-  }
-  
-  mainDlg:slider{
-    id = "diameterSlider",
-    label = "Diameter %",
-    min = 0, max = 100,
-    value = viewParams.lighting.diameter,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      viewParams.lighting.diameter = mainDlg.data.diameterSlider
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "controls")
-    end
-  }
-  
-  mainDlg:slider{
-    id = "ambientSlider",
-    label = "Ambient %",
-    min = 0, max = 100,
-    value = viewParams.lighting.ambient,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      viewParams.lighting.ambient = mainDlg.data.ambientSlider
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "controls")
-    end
-  }
-  
-  mainDlg:color{
-    id = "lightColorPicker",
-    label = "Light Color",
-    color = viewParams.lighting.lightColor,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      viewParams.lighting.lightColor = mainDlg.data.lightColorPicker
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
-    end
-  }
-  
-  mainDlg:check{
-    id = "rimEnabledCheck",
-    label = "Rim Lighting",
-    selected = viewParams.lighting.rimEnabled,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onclick = function()
-      viewParams.lighting.rimEnabled = mainDlg.data.rimEnabledCheck
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
-    end
-  }
-  
-  mainDlg:check{
-    id = "previewRotateCheck",
-    label = "Preview Lighting Rotation",
-    selected = viewParams.lighting.previewRotateEnabled,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onclick = function()
-      viewParams.lighting.previewRotateEnabled = mainDlg.data.previewRotateCheck
-    end
-  }
-
-  mainDlg:button{
-    id="openFXStack",
-    text="Open FX Stack…",
-    visible = (viewParams.shadingMode == "Stack"),
-    onclick=function()
-      if fxStackDialog then
-        -- migrate if needed before open
-        if fxStack then fxStack.migrateIfNeeded(viewParams) end
-        fxStackDialog.open(viewParams)
-      else
-        app.alert("FX Stack dialog module not available (fxStackDialog.lua missing).")
+  -- Get FX shader list text
+  function getFXListText()
+    local text = "FX Shaders:\n"
+    if #viewParams.shaderStack.fx == 0 then
+      text = text .. "  (none)\n"
+    else
+      for i, shader in ipairs(viewParams.shaderStack.fx) do
+        text = text .. string.format("  %d. %s\n", i, shader.id)
       end
     end
-  }
-
-  -- Debug: Show Light Cone (Patch 3.5)
-  mainDlg:check{
-    id = "showLightCone",
-    label = "Show Light Cone (debug)",
-    selected = viewParams.debugCone and viewParams.debugCone.enabled or false,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onclick = function()
-      viewParams.debugCone.enabled = mainDlg.data.showLightCone
-      -- Repaint preview only (no model re-render required)
-      if dialogueManager.previewDialog then pcall(function() dialogueManager.previewDialog:repaint() end) end
-    end
-  }
-  mainDlg:newrow()
-  mainDlg:number{
-    id = "coneLength",
-    label = "Cone Length (multiplier)",
-    text = tostring(viewParams.debugCone and viewParams.debugCone.length or 1.5),
-    decimals = 2,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      local v = tonumber(mainDlg.data.coneLength) or viewParams.debugCone.length
-      viewParams.debugCone.length = math.max(0.1, v)
-      if dialogueManager.previewDialog then pcall(function() dialogueManager.previewDialog:repaint() end) end
-    end
-  }
-  mainDlg:slider{
-    id = "coneSamples",
-    label = "Cone Samples",
-    min = 8,
-    max = 64,
-    value = viewParams.debugCone and viewParams.debugCone.samples or 24,
-    visible = (viewParams.shadingMode == "Dynamic"),
-    onchange = function()
-      viewParams.debugCone.samples = math.max(8, math.min(64, math.floor(mainDlg.data.coneSamples)))
-      if dialogueManager.previewDialog then pcall(function() dialogueManager.previewDialog:repaint() end) end
-    end
-  }
+    return text
+  end
+  
   mainDlg:label{
-    id = "coneHint",
-    text = "Debug cone: visualizes light position, directionality & diameter.",
-    visible = (viewParams.shadingMode == "Dynamic")
+    id = "fxList",
+    text = getFXListText()
   }
-
+  
+  mainDlg:newrow()
   mainDlg:button{
-    id = "resetLightButton",
-    text = "Reset Light",
-    visible = (viewParams.shadingMode == "Dynamic"),
+    id = "addFXShader",
+    text = "Add FX Shader...",
     onclick = function()
-      viewParams.lighting = {
-        pitch = 0,
-        yaw = 90,
-        diffuse = 60,
-        diameter = 100,
-        ambient = 30,
-        lightColor = Color(255, 255, 255),
-        rimEnabled = false,
-        previewRotateEnabled = false
+      if not shaderStack then return end
+      
+      -- Get available FX shaders
+      local availableShaders = shaderStack.listShaders("fx")
+      if not availableShaders or #availableShaders == 0 then
+        app.alert("No FX shaders available!")
+        return
+      end
+      
+      -- Build options list
+      local options = {}
+      for _, shaderInfo in ipairs(availableShaders) do
+        table.insert(options, shaderInfo.info.name .. " (" .. shaderInfo.id .. ")")
+      end
+      
+      -- Show selection dialog
+      local selDlg = Dialog("Add FX Shader")
+      selDlg:combobox{
+        id = "shaderChoice",
+        label = "Shader:",
+        option = options[1],
+        options = options
       }
-      viewParams._lastPitchYawChangeTime = os.clock()
-      mainDlg:modify{id="pitchSlider", value=0}
-      mainDlg:modify{id="yawSlider", value=90}
-      mainDlg:modify{id="diffuseSlider", value=60}
-      mainDlg:modify{id="diameterSlider", value=100}
-      mainDlg:modify{id="ambientSlider", value=30}
-      mainDlg:modify{id="lightColorPicker", color=Color(255, 255, 255)}
-      mainDlg:modify{id="rimEnabledCheck", selected=false}
-      mainDlg:modify{id="previewRotateCheck", selected=false}
-      viewerCore.requestPreview(mainDlg, viewParams, dialogueManager.controlsDialog, "ui")
+      selDlg:button{
+        text = "Add",
+        onclick = function()
+          local choice = selDlg.data.shaderChoice
+          -- Extract shader ID from "Name (id)" format
+          local shaderId = choice:match("%((.+)%)")
+          
+          if shaderId then
+            -- Get shader module
+            local shader = shaderStack.getShader(shaderId)
+            if shader then
+              -- Create default params
+              local defaultParams = {}
+              if shader.paramSchema then
+                for _, param in ipairs(shader.paramSchema) do
+                  defaultParams[param.name] = param.default
+                end
+              end
+              
+              -- Add to stack
+              table.insert(viewParams.shaderStack.fx, {
+                id = shaderId,
+                params = defaultParams
+              })
+              
+              refreshFXList()
+              schedulePreview(false, "fx_shader_added")
+            end
+          end
+          
+          selDlg:close()
+        end
+      }
+      selDlg:button{ text = "Cancel" }
+      selDlg:show()
+    end
+  }
+  
+  mainDlg:button{
+    id = "configureFX",
+    text = "Configure Shaders...",
+    onclick = function()
+      if #viewParams.shaderStack.fx == 0 then
+        app.alert("No FX shaders to configure!\nAdd a shader first.")
+        return
+      end
+      
+      -- Open configuration dialog
+      local cfgDlg = Dialog("Configure FX Shaders")
+      
+      for i, shaderConfig in ipairs(viewParams.shaderStack.fx) do
+        local shader = shaderStack.getShader(shaderConfig.id)
+        if shader then
+          cfgDlg:separator{ text = string.format("%d. %s", i, shader.info.name) }
+          
+          -- Move up/down/remove buttons
+          cfgDlg:button{
+            text = "↑",
+            onclick = function()
+              if i > 1 then
+                viewParams.shaderStack.fx[i], viewParams.shaderStack.fx[i-1] = 
+                  viewParams.shaderStack.fx[i-1], viewParams.shaderStack.fx[i]
+                cfgDlg:close()
+                schedulePreview(false, "fx_reorder")
+                refreshFXList()
+              end
+            end
+          }
+          cfgDlg:button{
+            text = "↓",
+            onclick = function()
+              if i < #viewParams.shaderStack.fx then
+                viewParams.shaderStack.fx[i], viewParams.shaderStack.fx[i+1] = 
+                  viewParams.shaderStack.fx[i+1], viewParams.shaderStack.fx[i]
+                cfgDlg:close()
+                schedulePreview(false, "fx_reorder")
+                refreshFXList()
+              end
+            end
+          }
+          cfgDlg:button{
+            text = "Remove",
+            onclick = function()
+              table.remove(viewParams.shaderStack.fx, i)
+              cfgDlg:close()
+              schedulePreview(false, "fx_removed")
+              refreshFXList()
+            end
+          }
+          
+          cfgDlg:newrow()
+          
+          -- Build parameter UI
+          if shaderUI then
+            shaderUI.buildShaderUI(cfgDlg, shader, shaderConfig.params, function(paramName, newValue)
+              shaderConfig.params[paramName] = newValue
+              schedulePreview(false, "fx_param_change")
+            end)
+          end
+        end
+      end
+      
+      cfgDlg:button{ text = "Close" }
+      cfgDlg:show()
+    end
+  }
+  
+  mainDlg:button{
+    id = "clearFXShaders",
+    text = "Clear All",
+    onclick = function()
+      viewParams.shaderStack.fx = {}
+      refreshFXList()
+      schedulePreview(false, "fx_cleared")
     end
   }
   
