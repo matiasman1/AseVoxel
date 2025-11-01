@@ -4,7 +4,7 @@
 local dynamicLight = {}
 
 dynamicLight.info = {
-  id = "dynamicLight",
+  id = "dynamic",
   name = "Dynamic Lighting",
   version = "1.0.0",
   author = "AseVoxel",

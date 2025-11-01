@@ -37,6 +37,22 @@ function viewerState.createDefaultParams()
     -- FX Stack
     fxStack = fxStack and fxStack.makeDefaultStack() or { modules = {} },
     
+    -- Shader Stack (NEW: Initialize properly at creation)
+    shaderStack = {
+      lighting = {
+        {
+          id = "basic",
+          enabled = true,
+          params = {
+            lightIntensity = 80,
+            shadeIntensity = 40
+          },
+          inputFrom = "base_color"
+        }
+      },
+      fx = {}
+    },
+    
     -- Shading
     shadingMode = "Basic", -- DEFAULT: Basic
     basicShadeIntensity = 50,

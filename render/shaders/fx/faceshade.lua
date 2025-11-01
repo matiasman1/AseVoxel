@@ -6,11 +6,11 @@ local faceshade = {}
 faceshade.info = {
   id = "faceshade",
   name = "FaceShade",
-  version = "1.0.0",
+  version = "1.1.0",
   author = "AseVoxel",
   category = "fx",
   complexity = "O(n)",
-  description = "Shade faces based on model-center axis (brightness multiplier only)",
+  description = "Shade faces based on model-center axis with Alpha/Literal modes, Material filtering, optional Tint (6 directions)",
   supportsNative = false,  -- TODO: Implement native version
   requiresNormals = true,
   inputs = {"previous_shader"},
@@ -18,6 +18,35 @@ faceshade.info = {
 }
 
 faceshade.paramSchema = {
+  {
+    name = "shadingMode",
+    type = "choice",
+    options = {"alpha", "literal"},
+    default = "alpha",
+    label = "Mode",
+    tooltip = "Alpha = brightness multiplier, Literal = replace with shade color"
+  },
+  {
+    name = "materialMode",
+    type = "bool",
+    default = false,
+    label = "Material Mode",
+    tooltip = "Skip pure colors (preserve pure R/G/B/C/M/Y/K/W)"
+  },
+  {
+    name = "enableTint",
+    type = "bool",
+    default = false,
+    label = "Enable Tint",
+    tooltip = "Apply color tint in Alpha mode"
+  },
+  {
+    name = "alphaTint",
+    type = "color",
+    default = {r=255, g=255, b=255},
+    label = "Tint Color",
+    tooltip = "Color to tint with in Alpha mode (when enabled)"
+  },
   {
     name = "topBrightness",
     type = "slider",
@@ -84,6 +113,22 @@ local FACE_NORMALS = {
   right  = {x = 1,  y = 0,  z = 0}
 }
 
+-- Helper: Check if color is pure (one channel 255, others near 0)
+local function isPureColor(r, g, b)
+  local threshold = 10  -- Tolerance for "near zero"
+  
+  local isPureR = (r >= 245) and (g <= threshold) and (b <= threshold)
+  local isPureG = (g >= 245) and (r <= threshold) and (b <= threshold)
+  local isPureB = (b >= 245) and (r <= threshold) and (g <= threshold)
+  local isPureC = (g >= 245) and (b >= 245) and (r <= threshold)  -- Cyan
+  local isPureM = (r >= 245) and (b >= 245) and (g <= threshold)  -- Magenta
+  local isPureY = (r >= 245) and (g >= 245) and (b <= threshold)  -- Yellow
+  local isPureK = (r <= threshold) and (g <= threshold) and (b <= threshold)  -- Black
+  local isPureW = (r >= 245) and (g >= 245) and (b >= 245)  -- White
+  
+  return isPureR or isPureG or isPureB or isPureC or isPureM or isPureY or isPureK or isPureW
+end
+
 -- Helper: Determine face direction from normal
 local function getFaceDirection(normal)
   -- Find which axis has the largest absolute component
@@ -104,7 +149,12 @@ local function getFaceDirection(normal)
 end
 
 function faceshade.process(shaderData, params)
-  -- Extract brightness parameters
+  -- Extract parameters
+  local shadingMode = params.shadingMode or "alpha"
+  local materialMode = params.materialMode or false
+  local enableTint = params.enableTint or false
+  local alphaTint = params.alphaTint or {r=255, g=255, b=255}
+  
   local brightness = {
     top = params.topBrightness or 255,
     bottom = params.bottomBrightness or 128,
@@ -117,18 +167,47 @@ function faceshade.process(shaderData, params)
   -- Process each face
   for i, face in ipairs(shaderData.faces or {}) do
     if face.normal and face.color then
+      -- Material mode check: skip pure colors
+      if materialMode then
+        if isPureColor(face.color.r, face.color.g, face.color.b) then
+          goto continue  -- Skip this face
+        end
+      end
+      
       -- Determine face direction from normal
       local direction = face.face or getFaceDirection(face.normal)
       
       -- Get brightness for this direction
       local b = brightness[direction] or 255
-      local factor = b / 255
       
-      -- Apply brightness multiplier to RGB
-      face.color.r = math.floor(face.color.r * factor + 0.5)
-      face.color.g = math.floor(face.color.g * factor + 0.5)
-      face.color.b = math.floor(face.color.b * factor + 0.5)
+      if shadingMode == "alpha" then
+        -- Alpha mode: multiply RGB by brightness factor
+        local factor = b / 255
+        
+        if enableTint then
+          -- Apply tint as well
+          local tintR = (alphaTint.r or 255) / 255
+          local tintG = (alphaTint.g or 255) / 255
+          local tintB = (alphaTint.b or 255) / 255
+          
+          face.color.r = math.floor(face.color.r * factor * tintR + 0.5)
+          face.color.g = math.floor(face.color.g * factor * tintG + 0.5)
+          face.color.b = math.floor(face.color.b * factor * tintB + 0.5)
+        else
+          face.color.r = math.floor(face.color.r * factor + 0.5)
+          face.color.g = math.floor(face.color.g * factor + 0.5)
+          face.color.b = math.floor(face.color.b * factor + 0.5)
+        end
+      elseif shadingMode == "literal" then
+        -- Literal mode: replace RGB with brightness level
+        face.color.r = b
+        face.color.g = b
+        face.color.b = b
+      end
+      
       -- Alpha unchanged
+      
+      ::continue::
     end
   end
   

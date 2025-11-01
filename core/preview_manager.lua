@@ -238,6 +238,7 @@ function viewerCore.updatePreview(dlg, params, controlsDialog, callback)
       } or nil,
       basicShadeIntensity = params.basicShadeIntensity,
       basicLightIntensity = params.basicLightIntensity,
+      shaderStack = params.shaderStack,  -- NEW: Pass shader stack from viewParams
       metrics = {
         startTime = startTime,
         params = params,

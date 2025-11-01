@@ -4,7 +4,7 @@
 local basicLight = {}
 
 basicLight.info = {
-  id = "basicLight",
+  id = "basic",
   name = "Basic Light",
   version = "1.0.0",
   author = "AseVoxel",

@@ -115,6 +115,9 @@ AseVoxel.render.shader_interface = loadModule("render" .. sep .. "shader_interfa
 AseVoxel.render.shader_stack = loadModule("render" .. sep .. "shader_stack")
 AseVoxel.render.shader_ui = loadModule("render" .. sep .. "shader_ui")
 
+-- Load all shaders into registry
+AseVoxel.render.shader_stack.loadShaders()
+
 -- Main preview renderer coordination module
 AseVoxel.render.preview_renderer = loadModule("render" .. sep .. "preview_renderer")
 

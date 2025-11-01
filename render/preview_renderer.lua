@@ -7,6 +7,31 @@
 --   - Each shader implements the shader interface (see render/shader_interface.lua)
 --   - Shaders execute in order: lighting shaders → FX shaders
 
+-- VERBOSE DEBUG MODE: Set to true to enable detailed shader execution logging
+-- WARNING: Enable only for debugging, causes significant performance impact
+local VERBOSE_SHADER_DEBUG = false
+
+-- Track what we've logged this frame to avoid spam
+local _debugPrintedThisFrame = {}
+local _currentFrameId = 0
+
+-- Helper function for verbose logging (once per frame per message type)
+local function vlog(messageType, ...)
+  if VERBOSE_SHADER_DEBUG then
+    local key = messageType
+    if not _debugPrintedThisFrame[key] then
+      print("[SHADER_DEBUG]", ...)
+      _debugPrintedThisFrame[key] = true
+    end
+  end
+end
+
+-- Call this at the start of each render to reset frame tracking
+local function resetDebugFrame()
+  _currentFrameId = _currentFrameId + 1
+  _debugPrintedThisFrame = {}
+end
+
 -- Access dependencies through global AseVoxel namespace (lazy loading)
 local function getRotation()
   return AseVoxel.math.rotation
@@ -961,7 +986,8 @@ end
 --------------------------------------------------------------------------------
 local function initializeShaderStack(params)
   if params.shaderStack then
-    return -- Already initialized
+    -- Already initialized - this should rarely happen now
+    return
   end
   
   -- Create default shader stack based on current settings
@@ -969,7 +995,7 @@ local function initializeShaderStack(params)
   params.shaderStack = {
     lighting = {
       {
-        id = "basicLight",
+        id = "basic",
         enabled = true,
         params = {
           lightIntensity = 80,
@@ -982,30 +1008,51 @@ local function initializeShaderStack(params)
   }
 end
 
--- Apply shader stack to a single face
-local function applyShaderStackToFace(faceName, baseColor, params, rotationMatrix, viewDir, normal)
+-- Batch process shader stack for all faces (executed once per voxel)
+-- Returns a table mapping face names to processed colors
+local function batchProcessShaderStack(faceBase, faceNormals, params, voxelPosition)
   if not shaderStack then
-    return baseColor -- Fallback if shader stack module not loaded
+    vlog("batch_no_module", "ERROR: shaderStack module not loaded!")
+    return nil
   end
   
-  -- Build shaderData structure for this face
-  local shaderData = {
-    faces = {
-      {
-        voxel = {x = 0, y = 0, z = 0}, -- Position not used for single-face shading
-        face = faceName,
-        normal = normal or {x = 0, y = 1, z = 0},
-        color = {
-          r = baseColor.red or baseColor.r or 255,
-          g = baseColor.green or baseColor.g or 255,
-          b = baseColor.blue or baseColor.b or 255,
-          a = baseColor.alpha or baseColor.a or 255
-        }
+  if not params.shaderStack then
+    vlog("batch_no_stack", "ERROR: params.shaderStack is nil!")
+    return nil  -- No shader stack, use default shading
+  end
+  
+  -- Check if shader stack is empty
+  local hasShaders = (params.shaderStack.lighting and #params.shaderStack.lighting > 0) or
+                     (params.shaderStack.fx and #params.shaderStack.fx > 0)
+  
+  if not hasShaders then
+    vlog("batch_empty", "WARNING: Empty shader stack, returning nil")
+    return nil  -- Empty stack, use default shading
+  end
+  
+  -- Build faces array for shader processing
+  local faces = {}
+  for faceName, baseColor in pairs(faceBase) do
+    local normal = faceNormals[faceName] or {x = 0, y = 1, z = 0}
+    table.insert(faces, {
+      voxel = voxelPosition or {x = 0, y = 0, z = 0},
+      face = faceName,
+      normal = normal,
+      color = {
+        r = baseColor.red or baseColor.r or 255,
+        g = baseColor.green or baseColor.g or 255,
+        b = baseColor.blue or baseColor.b or 255,
+        a = baseColor.alpha or baseColor.a or 255
       }
-    },
+    })
+  end
+  
+  -- Build shader data structure
+  local shaderData = {
+    faces = faces,
     camera = {
       position = params.cameraPosition or {x = 0, y = 0, z = 10},
-      direction = viewDir or {x = 0, y = 0, z = -1}
+      direction = params.viewDir or {x = 0, y = 0, z = -1}
     },
     middlePoint = params.middlePoint or {x = 0, y = 0, z = 0},
     width = params.width or 400,
@@ -1013,61 +1060,48 @@ local function applyShaderStackToFace(faceName, baseColor, params, rotationMatri
     voxelSize = params.scale or 1
   }
   
-  -- Execute shader stack
+  vlog("batch_execute", "Executing shader stack:", #faces, "faces,", 
+    params.shaderStack.lighting and #params.shaderStack.lighting or 0, "lighting,",
+    params.shaderStack.fx and #params.shaderStack.fx or 0, "fx")
+  
+  -- Execute shader stack once for all faces
   local result = shaderStack.execute(shaderData, params.shaderStack)
   
-  -- Extract result color
-  if result and result.faces and result.faces[1] and result.faces[1].color then
-    local c = result.faces[1].color
-    return Color(c.r, c.g, c.b, c.a)
+  -- Convert result back to face name → color mapping
+  if result and result.faces then
+    vlog("batch_success", "Shader processing successful,", #result.faces, "faces returned")
+    local colorMap = {}
+    for _, face in ipairs(result.faces) do
+      if face.face and face.color then
+        colorMap[face.face] = Color(face.color.r, face.color.g, face.color.b, face.color.a)
+      end
+    end
+    return colorMap
+  else
+    vlog("batch_failed", "ERROR: Shader result is nil or has no faces!")
   end
   
-  return baseColor
+  return nil
 end
 
 --------------------------------------------------------------------------------
--- Core Shaded Face Drawing (REPLACED WITH SHADER STACK)
+-- Core Shaded Face Drawing (USES SHADER STACK VIA BATCH PROCESSING)
 --------------------------------------------------------------------------------
--- NEW: shadeFaceColor now uses the shader stack system exclusively
+-- This function is called per-face but uses cached batch-processed shader results
 local function shadeFaceColor(faceName, baseColor, params)
-  -- Ensure shader stack is initialized
-  if not params.shaderStack then
-    initializeShaderStack(params)
-  end
-  
-  -- Get rotation matrix and view direction for shader processing
-  local M = params._rotationMatrixForFX
-  if not M then
-    M = mathUtils.createRotationMatrix(params.xRotation or 0, params.yRotation or 0, params.zRotation or 0)
-    params._rotationMatrixForFX = M
-  end
-  
-  local viewDir = params.viewDir or {x=0,y=0,z=1}
-  local vd = viewDir
-  local mag = math.sqrt(vd.x*vd.x+vd.y*vd.y+vd.z*vd.z)
-  if mag > 1e-6 then 
-    vd = {x=vd.x/mag, y=vd.y/mag, z=vd.z/mag}
-  end
-  
-  -- Get face normal (rotated to camera space)
-  local n = FACE_NORMALS[faceName]
-  local normal = {x=0, y=1, z=0}
-  if n then
-    normal = {
-      x = M[1][1]*n[1] + M[1][2]*n[2] + M[1][3]*n[3],
-      y = M[2][1]*n[1] + M[2][2]*n[2] + M[2][3]*n[3],
-      z = M[3][1]*n[1] + M[3][2]*n[2] + M[3][3]*n[3]
-    }
-    local nmag = math.sqrt(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z)
-    if nmag > 1e-6 then
-      normal.x = normal.x / nmag
-      normal.y = normal.y / nmag
-      normal.z = normal.z / nmag
+  -- Check if we have batch-processed shader results
+  if params._shaderBatchResults then
+    local processedColor = params._shaderBatchResults[faceName]
+    if processedColor then
+      return processedColor
     end
+    vlog("shade_no_cache", "WARNING: No cached result for face", faceName)
+  else
+    vlog("shade_no_batch", "WARNING: No _shaderBatchResults in params")
   end
   
-  -- Apply shader stack
-  return applyShaderStackToFace(faceName, baseColor, params, M, vd, normal)
+  -- Fallback: return base color if no shader processing
+  return baseColor
 end
 
 -- Updated drawVoxel to apply true perspective (FOV-based) projection.
@@ -1177,6 +1211,38 @@ function previewRenderer.drawVoxel(target, x, y, size, color, faceVisibility, pa
     params.rotatedNormals = rotatedNormals
     params.lightDir = normalize(lightDir or {x=0.55,y=0.75,z=0.35})
   end
+  
+  -- NEW: Batch process shaders once for all faces of this voxel
+  -- Compute rotated normals for shader processing
+  local faceNormalsForShader = {}
+  local M = mathUtils.createRotationMatrix(params.xRotation or 0, params.yRotation or 0, params.zRotation or 0)
+  for faceName, _ in pairs(faceVisibility) do
+    local n = FACE_NORMALS[faceName]
+    if n then
+      local normal = {
+        x = M[1][1]*n[1] + M[1][2]*n[2] + M[1][3]*n[3],
+        y = M[2][1]*n[1] + M[2][2]*n[2] + M[2][3]*n[3],
+        z = M[3][1]*n[1] + M[3][2]*n[2] + M[3][3]*n[3]
+      }
+      local nmag = math.sqrt(normal.x*normal.x + normal.y*normal.y + normal.z*normal.z)
+      if nmag > 1e-6 then
+        normal.x = normal.x / nmag
+        normal.y = normal.y / nmag
+        normal.z = normal.z / nmag
+      end
+      faceNormalsForShader[faceName] = normal
+    else
+      faceNormalsForShader[faceName] = {x=0, y=1, z=0}
+    end
+  end
+  
+  -- Ensure shader stack is initialized (should already be done at render start)
+  if not params.shaderStack then
+    initializeShaderStack(params)
+  end
+  
+  -- Execute batch shader processing
+  params._shaderBatchResults = batchProcessShaderStack(faceBase, faceNormalsForShader, params, tv)
 
   for _, item in ipairs(sorted) do
     local face = item.face
@@ -1520,8 +1586,18 @@ function previewRenderer.renderVoxelModel(model, params)
   _initModules()  -- Initialize lazy-loaded modules
   params = params or {}
   
-  -- Ensure shader stack is initialized
-  initializeShaderStack(params)
+  -- Reset debug frame tracking to avoid log spam
+  resetDebugFrame()
+  
+  -- Ensure shader stack is initialized (but DON'T overwrite existing stack!)
+  if not params.shaderStack then
+    vlog("init_stack", "Initializing shader stack for first time")
+    initializeShaderStack(params)
+  else
+    vlog("has_stack", "Shader stack already present:", 
+      params.shaderStack.lighting and #params.shaderStack.lighting or 0, "lighting,",
+      params.shaderStack.fx and #params.shaderStack.fx or 0, "fx")
+  end
   
   local _metrics = params.metrics
   
@@ -1574,6 +1650,15 @@ function previewRenderer.renderVoxelModel(model, params)
       } or {r=0,g=0,b=0,a=0},
       shaderStack = params.shaderStack  -- Pass shader stack to native renderer
     }
+    
+    -- DEBUG: Verify shader stack is being passed to Native renderer
+    if params.shaderStack then
+      local lightCount = (params.shaderStack.lighting and #params.shaderStack.lighting) or 0
+      local fxCount = (params.shaderStack.fx and #params.shaderStack.fx) or 0
+      if lightCount > 0 or fxCount > 0 then
+        print(string.format("[AseVoxel] Native render with shaders: %d lighting, %d fx", lightCount, fxCount))
+      end
+    end
     
     local nativeResult
     
