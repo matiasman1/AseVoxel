@@ -219,6 +219,8 @@ function viewerCore.updatePreview(dlg, params, controlsDialog, callback)
       rotationMatrix = params.rotationMatrix 
         or (dialogueManager and dialogueManager.currentRotationMatrix),
       fxStack = params.fxStack,
+      -- NEW: Forward shader stack configuration to renderer
+      shaderStack = params.shaderStack,
       -- Forward mesh-mode toggle so previewRenderer / native can choose mesh pipeline
       mesh = params.mesh or params.meshMode,
       meshMode = params.meshMode or params.mesh,
