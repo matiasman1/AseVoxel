@@ -1,426 +1,335 @@
-[CmdletBinding()]
+#!/usr/bin/env pwsh
+# Rewritten to imitate create_extension.sh behavior and CLI
+
 param(
-    [Parameter(HelpMessage="Display help information")]
-    [Alias("h")]
-    [switch]$Help,
-    
-    [Parameter(HelpMessage="Verbose output (more detailed logging)")]
-    [Alias("v")]
+    [switch]$h,
+    [switch]$help,
     [switch]$Verbose,
-    
-    [Parameter(HelpMessage="Quiet mode (minimal output)")]
-    [Alias("q")]
     [switch]$Quiet,
-    
-    [Parameter(HelpMessage="Compile native libraries")]
-    [Alias("c")]
-    [switch]$Compile,
-    
-    [Parameter(HelpMessage="Skip compilation of native libraries")]
-    [Alias("C")]
+    [switch]$COMPILE_FLAG,
     [switch]$NoCompile,
-    
-    [Parameter(HelpMessage="Prompt for version (default)")]
-    [Alias("p")]
-    [switch]$PromptVersion,
-    
-    [Parameter(HelpMessage="Auto-increment patch version")]
-    [Alias("a")]
-    [switch]$AutoVersion,
-    
-    [Parameter(HelpMessage="Keep current version")]
-    [Alias("k")]
-    [switch]$KeepVersion,
-    
-    [Parameter(HelpMessage="Set specific version")]
-    [Alias("V")]
+    [switch]$Prompt,
+    [switch]$Auto,
+    [switch]$Keep,
     [string]$Version,
-    
-    [Parameter(HelpMessage="Show what would be done without doing it")]
-    [Alias("n")]
     [switch]$DryRun,
-    
-    [Parameter(HelpMessage="Clean build artifacts before building")]
     [switch]$Clean
 )
 
-# Function to show help
+# Defaults
+$VERBOSITY = 1   # 0=quiet,1=normal,2=verbose
+$COMPILE_FLAG = $true
+$VERSION_MODE = "prompt"  # prompt, auto, keep, manual
+$DRY_RUN_FLAG = $false
+$CLEAN_FLAG = $false
+$NEW_VERSION = ""
+
 function Show-Help {
-    Write-Host @"
-Usage: .\create_extension.ps1 [OPTIONS]
+    @"
+Usage: create_extension.ps1 [OPTIONS]
 
 Creates an Aseprite extension package with optional compilation and versioning.
 
 OPTIONS:
-    -Help, -h               Show this help message
-    -Verbose, -v            Verbose output (detailed logging)
-    -Quiet, -q              Quiet mode (minimal output)
-    
-    -Compile, -c            Compile native libraries (default)
-    -NoCompile, -C          Skip compilation
-    
-    -PromptVersion, -p      Prompt for version (default)
-    -AutoVersion, -a        Auto-increment patch version
-    -KeepVersion, -k        Keep current version
-    -Version VERSION, -V    Set specific version
-    
-    -DryRun, -n             Show what would be done without doing it
-    -Clean                  Clean build artifacts before building
-    
-EXAMPLES:
-    .\create_extension.ps1                      # Interactive mode
-    .\create_extension.ps1 -Quiet -KeepVersion -NoCompile
-    .\create_extension.ps1 -Verbose -AutoVersion
-    .\create_extension.ps1 -Version 1.2.3
-    .\create_extension.ps1 -DryRun -Clean
-
-"@
+    -h, -help               Show this help message
+    -Verbose                Verbose output
+    -Quiet                  Quiet mode
+    -Compile                Compile native libraries (default)
+    -NoCompile              Skip compilation
+    -Prompt                 Prompt for version (default)
+    -Auto                   Auto-increment patch version
+    -Keep                   Keep current version
+    -Version <version>      Set specific version
+    -DryRun                 Dry-run mode
+    -Clean                  Clean build artifacts
+"@ | Write-Host
     exit 0
 }
 
-# Show help if requested
-if ($Help) {
-    Show-Help
-}
+function Log-Info { param($m) if ($VERBOSITY -ge 1) { Write-Host $m } }
+function Log-Verbose { param($m) if ($VERBOSITY -ge 2) { Write-Host "[VERBOSE] $m" -ForegroundColor Cyan } }
+function Log-Error { param($m) Write-Host "[ERROR] $m" -ForegroundColor Red }
+function Log-Dry { param($m) Write-Host "[DRY-RUN] $m" -ForegroundColor Yellow }
 
-# Set verbosity level
-$VerbosityLevel = 1  # 0=quiet, 1=normal, 2=verbose
-if ($Quiet) { $VerbosityLevel = 0 }
-if ($Verbose) { $VerbosityLevel = 2 }
+# Parse params
+if ($h -or $help) { Show-Help }
+if ($Verbose) { $VERBOSITY = 2 }
+if ($Quiet) { $VERBOSITY = 0 }
+if ($COMPILE_FLAG) { $COMPILE_FLAG = $true }
+if ($NoCompile) { $COMPILE_FLAG = $false }
+if ($Prompt) { $VERSION_MODE = "prompt" }
+if ($Auto) { $VERSION_MODE = "auto" }
+if ($Keep) { $VERSION_MODE = "keep" }
+if ($Version) { $VERSION_MODE = "manual"; $NEW_VERSION = $Version }
+if ($DryRun) { $DRY_RUN_FLAG = $true }
+if ($Clean) { $CLEAN_FLAG = $true }
 
-# Determine compilation mode
-$ShouldCompile = $true
-if ($NoCompile) { $ShouldCompile = $false }
-if ($Compile) { $ShouldCompile = $true }
-
-# Determine version mode
-$VersionMode = "prompt"
-if ($KeepVersion) { $VersionMode = "keep" }
-if ($AutoVersion) { $VersionMode = "auto" }
-if ($Version) { $VersionMode = "manual" }
-
-# Logging functions
-function Log-Info {
-    param([string]$Message)
-    if ($VerbosityLevel -ge 1) {
-        Write-Host $Message
-    }
-}
-
-function Log-Verbose {
-    param([string]$Message)
-    if ($VerbosityLevel -ge 2) {
-        Write-Host "[VERBOSE] $Message" -ForegroundColor Cyan
-    }
-}
-
-function Log-Error {
-    param([string]$Message)
-    Write-Host "[ERROR] $Message" -ForegroundColor Red
-}
-
-function Log-DryRun {
-    param([string]$Message)
-    Write-Host "[DRY-RUN] $Message" -ForegroundColor Yellow
-}
-
-# Navigate to the directory and store the script location
-$scriptDir = (Split-Path -Parent $MyInvocation.MyCommand.Definition)
+# Navigate to script directory
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 Set-Location -Path $scriptDir
 Log-Verbose "Working directory: $scriptDir"
 
-# Clean build artifacts if requested
-if ($Clean) {
+# Clean build artifacts
+if ($CLEAN_FLAG) {
     Log-Info "Cleaning build artifacts..."
-    if (-not $DryRun) {
-        $artifactsToRemove = @(
-            "render\bin\asevoxel_native.so",
-            "render\bin\asevoxel_native.dll",
-            "libasevoxel_native.a"
-        )
-        foreach ($artifact in $artifactsToRemove) {
-            $fullPath = Join-Path $scriptDir $artifact
-            if (Test-Path $fullPath) {
-                Remove-Item $fullPath -Force -ErrorAction SilentlyContinue
-                Log-Verbose "Removed $artifact"
+    if (-not $DRY_RUN_FLAG) {
+        $artifacts = @("render/bin/asevoxel_native.so","render/bin/asevoxel_native.dll","libasevoxel_native.a")
+        foreach ($a in $artifacts) {
+            $p = Join-Path $scriptDir $a
+            if (Test-Path $p) {
+                Remove-Item $p -Force -ErrorAction SilentlyContinue
+                Log-Verbose "Removed $a"
             }
         }
     } else {
-        Log-DryRun "Would remove native library files"
+        Log-Dry "Would remove native library files"
     }
 }
 
-# Read the current version from package.json
-$currentVersion = $null
-$newVersion = $null
-
+# Version management
 if (Test-Path "package.json") {
-    $packageContent = Get-Content "package.json" -Raw | ConvertFrom-Json
-    $currentVersion = $packageContent.version
-    Log-Info "Current version: $currentVersion"
-    
-    switch ($VersionMode) {
+    try {
+        $pkg = Get-Content "package.json" -Raw | ConvertFrom-Json
+        $current = $pkg.version
+    } catch {
+        Log-Error "Failed reading package.json: $_"
+        $current = ""
+    }
+    Log-Info "Current version: $current"
+
+    switch ($VERSION_MODE) {
         "prompt" {
-            $newVersion = Read-Host "Enter new version (leave empty to keep $currentVersion)"
-            if ([string]::IsNullOrWhiteSpace($newVersion)) {
-                $newVersion = $currentVersion
-                Log-Info "Keeping version $newVersion"
+            $input = Read-Host "Enter new version (leave empty to keep $current)"
+            if ([string]::IsNullOrWhiteSpace($input)) {
+                $NEW_VERSION = $current
+                Log-Info "Keeping version $NEW_VERSION"
             } else {
-                Log-Info "Updating to version $newVersion"
-                if (-not $DryRun) {
-                    $packageContent.version = $newVersion
-                    $packageContent | ConvertTo-Json -Depth 10 | Set-Content "package.json"
+                $NEW_VERSION = $input
+                Log-Info "Updating to version $NEW_VERSION"
+                if (-not $DRY_RUN_FLAG) {
+                    try {
+                        $pkgObj = Get-Content package.json -Raw | ConvertFrom-Json
+                        $pkgObj.version = $NEW_VERSION
+                        $pkgObj | ConvertTo-Json -Depth 10 | Set-Content package.json
+                    } catch {
+                        Log-Error "Failed updating package.json: $_"
+                    }
                 } else {
-                    Log-DryRun "Would update version to $newVersion"
+                    Log-Dry "Would update version to $NEW_VERSION"
                 }
             }
         }
         "auto" {
-            # Auto-increment patch version
-            $versionParts = $currentVersion -split '\.'
-            $major = [int]$versionParts[0]
-            $minor = [int]$versionParts[1]
-            $patch = [int]$versionParts[2]
-            $patch++
-            $newVersion = "$major.$minor.$patch"
-            Log-Info "Auto-incrementing version to $newVersion"
-            if (-not $DryRun) {
-                $packageContent.version = $newVersion
-                $packageContent | ConvertTo-Json -Depth 10 | Set-Content "package.json"
+            if ($current -match '^(\d+)\.(\d+)\.(\d+)$') {
+                $major = [int]$matches[1]; $minor = [int]$matches[2]; $patch = [int]$matches[3] + 1
+                $NEW_VERSION = "$major.$minor.$patch"
+                Log-Info "Auto-incrementing version to $NEW_VERSION"
+                if (-not $DRY_RUN_FLAG) {
+                    try {
+                        $pkgObj = Get-Content package.json -Raw | ConvertFrom-Json
+                        $pkgObj.version = $NEW_VERSION
+                        $pkgObj | ConvertTo-Json -Depth 10 | Set-Content package.json
+                    } catch {
+                        Log-Error "Failed updating package.json: $_"
+                    }
+                } else {
+                    Log-Dry "Would update version to $NEW_VERSION"
+                }
             } else {
-                Log-DryRun "Would update version to $newVersion"
+                Log-Error "Current version not in MAJOR.MINOR.PATCH format: $current"
+                $NEW_VERSION = $current
             }
         }
         "keep" {
-            $newVersion = $currentVersion
-            Log-Info "Keeping version $newVersion"
+            $NEW_VERSION = $current
+            Log-Info "Keeping version $NEW_VERSION"
         }
         "manual" {
-            $newVersion = $Version
-            Log-Info "Setting version to $newVersion"
-            if (-not $DryRun) {
-                $packageContent.version = $newVersion
-                $packageContent | ConvertTo-Json -Depth 10 | Set-Content "package.json"
+            if (-not [string]::IsNullOrWhiteSpace($NEW_VERSION)) {
+                Log-Info "Setting version to $NEW_VERSION"
+                if (-not $DRY_RUN_FLAG) {
+                    try {
+                        $pkgObj = Get-Content package.json -Raw | ConvertFrom-Json
+                        $pkgObj.version = $NEW_VERSION
+                        $pkgObj | ConvertTo-Json -Depth 10 | Set-Content package.json
+                    } catch {
+                        Log-Error "Failed updating package.json: $_"
+                    }
+                } else {
+                    Log-Dry "Would update version to $NEW_VERSION"
+                }
             } else {
-                Log-DryRun "Would update version to $newVersion"
+                Log-Error "No version provided for manual mode"
             }
         }
     }
 } else {
     Log-Error "package.json not found, version information unavailable"
-    $newVersion = "unknown"
+    $NEW_VERSION = "unknown"
 }
 
-# Define extension name 
-$extensionName = "AseVoxel-Viewer"
+# Prepare names
+$EXT = "AseVoxel-Viewer"
+$tempZip = Join-Path $scriptDir "$EXT.zip"
+$outFile = Join-Path $scriptDir "$EXT.aseprite-extension"
 
-# Define file names with full paths to ensure correct location
-$tempZipFile = Join-Path -Path $scriptDir -ChildPath "$extensionName.zip"
-$outputFile = Join-Path -Path $scriptDir -ChildPath "$extensionName.aseprite-extension"
-
-# Delete any existing files
-if (Test-Path $tempZipFile) {
-    Log-Verbose "Removing existing $tempZipFile"
-    if (-not $DryRun) {
-        Remove-Item $tempZipFile -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 1
-    } else {
-        Log-DryRun "Would remove $tempZipFile"
-    }
+# Remove previous outputs
+if (Test-Path $tempZip) {
+    Log-Verbose "Removing existing $tempZip"
+    if (-not $DRY_RUN_FLAG) { Remove-Item $tempZip -Force -ErrorAction SilentlyContinue } else { Log-Dry "Would remove $tempZip" }
+}
+if (Test-Path $outFile) {
+    Log-Info "Removing existing $outFile"
+    if (-not $DRY_RUN_FLAG) { Remove-Item $outFile -Force -ErrorAction SilentlyContinue } else { Log-Dry "Would remove $outFile" }
 }
 
-if (Test-Path $outputFile) {
-    Log-Info "Removing existing $outputFile"
-    if (-not $DryRun) {
-        Remove-Item $outputFile -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 1
-    } else {
-        Log-DryRun "Would remove $outputFile"
-    }
-}
-
-# Compile native libraries
-if ($ShouldCompile) {
+# Compilation (Linux .so and Windows cross .dll) - mimic shell script behavior
+if ($COMPILE_FLAG) {
     Log-Info "Compiling native libraries..."
-    
-    # Create bin directory if needed
-    $binDir = Join-Path $scriptDir "render\bin"
+
+    $binDir = Join-Path $scriptDir "render/bin"
     if (-not (Test-Path $binDir)) {
-        if (-not $DryRun) {
+        if (-not $DRY_RUN_FLAG) {
             New-Item -ItemType Directory -Path $binDir -Force | Out-Null
-            Log-Verbose "Created render\bin directory"
+            Log-Verbose "Created render/bin"
         } else {
-            Log-DryRun "Would create render\bin directory"
+            Log-Dry "Would create render/bin"
         }
     }
-    
-    # Check for source file
-    $sourceFile = Join-Path $scriptDir "asevoxel_native.cpp"
-    if (-not (Test-Path $sourceFile)) {
+
+    # Check source
+    if (-not (Test-Path "asevoxel_native.cpp")) {
         Log-Error "Source file asevoxel_native.cpp not found"
         exit 1
     }
-    
-    # Windows compilation requires MinGW-w64 or MSVC
-    # Check for g++ (MinGW) first
-    $gppPath = Get-Command g++ -ErrorAction SilentlyContinue
-    $clPath = Get-Command cl -ErrorAction SilentlyContinue
-    
-    if ($gppPath) {
-        Log-Info "Found g++ compiler (MinGW): $($gppPath.Source)"
-        
-        # Check for Lua development files
-        $luaInclude = Join-Path $scriptDir "thirdparty\lua-win\include"
-        $luaLib = Join-Path $scriptDir "thirdparty\lua-win\lib"
-        
-        if (-not (Test-Path $luaInclude) -or -not (Test-Path $luaLib)) {
-            Log-Error "Windows Lua libraries not found in thirdparty\lua-win\"
-            Log-Error "Please ensure thirdparty\lua-win\include and thirdparty\lua-win\lib exist"
-            exit 1
-        }
-        
-        Log-Verbose "Using Lua headers from: $luaInclude"
-        Log-Verbose "Using Lua library from: $luaLib"
-        
-        if (-not $DryRun) {
-            $outputDll = Join-Path $binDir "asevoxel_native.dll"
-            $compileCmd = "g++ -O2 -std=c++17 -D_WIN32_WINNT=0x0601 -shared `"$sourceFile`" " +
-                          "-I`"$luaInclude`" -L`"$luaLib`" -llua54 " +
-                          "-static -static-libgcc -static-libstdc++ " +
-                          "-o `"$outputDll`""
-            
-            Log-Verbose "Compile command: $compileCmd"
-            
-            try {
-                $output = Invoke-Expression $compileCmd 2>&1
-                if ($LASTEXITCODE -eq 0) {
-                    Log-Info "✓ Built asevoxel_native.dll"
-                    if ($VerbosityLevel -ge 2) {
-                        $fileInfo = Get-Item $outputDll
-                        Log-Verbose "  Size: $($fileInfo.Length) bytes"
-                    }
-                } else {
-                    Log-Error "Failed to build asevoxel_native.dll"
-                    Log-Error $output
-                    exit 1
-                }
-            } catch {
-                Log-Error "Compilation failed: $_"
+
+    # Linux build (g++)
+    $gpp = Get-Command g++ -ErrorAction SilentlyContinue
+    $pkg = Get-Command pkg-config -ErrorAction SilentlyContinue
+    if ($gpp -and $pkg) {
+        Log-Verbose "Found g++ and pkg-config"
+        if (-not $DRY_RUN_FLAG) {
+            # verify lua5.4 exists
+            & pkg-config --exists lua5.4
+            if ($LASTEXITCODE -ne 0) { Log-Error "Lua 5.4 dev files not found"; exit 1 }
+            $cflags = (& pkg-config --cflags lua5.4).Trim()
+            $libs   = (& pkg-config --libs lua5.4).Trim()
+            Log-Verbose "Compiler flags: $cflags"
+            Log-Verbose "Linker flags: $libs"
+
+            $soOut = Join-Path $binDir "asevoxel_native.so"
+            $args = @('-shared','-fPIC') + ($cflags -split '\s+') + @('-o', $soOut, 'asevoxel_native.cpp') + ($libs -split '\s+')
+            Log-Verbose "Running: g++ $($args -join ' ')"
+            $output = & g++ @args 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Log-Info "✓ Built asevoxel_native.so"
+                if ($VERBOSITY -ge 2) { Get-ChildItem $soOut | ForEach-Object { Write-Host $_ } }
+            } else {
+                Log-Error "Failed to build asevoxel_native.so"
+                Log-Error $output
                 exit 1
             }
-        } else {
-            Log-DryRun "Would compile asevoxel_native.dll with g++"
-        }
-        
-    } elseif ($clPath) {
-        Log-Info "Found MSVC compiler: $($clPath.Source)"
-        Log-Info "Note: MSVC compilation support is experimental"
-        
-        # MSVC compilation would require different flags
-        # For now, just warn
-        Log-Info "Please use MinGW-w64 g++ for reliable compilation on Windows"
-        Log-Info "Or compile on Linux and copy the DLL to render\bin\"
-        
+        } else { Log-Dry "Would compile asevoxel_native.so" }
     } else {
-        Log-Info "No C++ compiler found on Windows"
-        Log-Info "Native library compilation requires one of:"
-        Log-Info "  1. MinGW-w64 (recommended): choco install mingw"
-        Log-Info "  2. MSVC (Visual Studio Build Tools)"
-        Log-Info "  3. Compile on Linux and copy DLLs to render\bin\"
-        
-        # Check if pre-compiled binaries exist
-        $dllPath = Join-Path $binDir "asevoxel_native.dll"
-        if (Test-Path $dllPath) {
-            Log-Info "Found pre-compiled asevoxel_native.dll, will use existing binary"
-        } else {
-            Log-Error "No compiler found and no pre-compiled DLL available"
-            exit 1
-        }
+        Log-Verbose "g++ or pkg-config not found for Linux build; skipping .so build"
+    }
+
+    # Windows cross compile (mingw)
+    $mingw = Get-Command x86_64-w64-mingw32-g++ -ErrorAction SilentlyContinue
+    if ($mingw) {
+        Log-Verbose "Found MinGW cross-compiler"
+        if (-not $DRY_RUN_FLAG) {
+            if (-not (Test-Path "thirdparty/lua-win/include") -or -not (Test-Path "thirdparty/lua-win/lib")) {
+                Log-Error "Windows Lua libraries not found in thirdparty/lua-win"
+                exit 1
+            }
+            $dllOut = Join-Path $binDir "asevoxel_native.dll"
+            $args = @(
+                '-O2','-std=c++17','-D_WIN32_WINNT=0x0601','-shared',
+                'asevoxel_native.cpp',
+                '-Ithirdparty/lua-win/include','-Lthirdparty/lua-win/lib','-llua54',
+                '-static','-static-libgcc','-static-libstdc++',
+                '-Wl,--out-implib,libasevoxel_native.a',
+                '-o', $dllOut
+            )
+            Log-Verbose "Running: x86_64-w64-mingw32-g++ $($args -join ' ')"
+            $output = & x86_64-w64-mingw32-g++ @args 2>&1
+            if ($LASTEXITCODE -eq 0) {
+                Log-Info "✓ Built asevoxel_native.dll"
+                if ($VERBOSITY -ge 2) { Get-ChildItem $dllOut | ForEach-Object { Write-Host $_ } }
+            } else {
+                Log-Error "Failed to build asevoxel_native.dll"
+                Log-Error $output
+                exit 1
+            }
+        } else { Log-Dry "Would compile asevoxel_native.dll" }
+    } else {
+        Log-Verbose "MinGW cross-compiler not found; skipping .dll build"
     }
 } else {
-    Log-Info "Skipping compilation (-NoCompile flag set)"
+    Log-Info "Skipping compilation (--no-compile)"
 }
 
-# Create a new zip archive using PowerShell's Compress-Archive
-Log-Info "Creating $tempZipFile..."
-Log-Verbose "Including: *.lua, *.json, render/bin/, io/, math/, utils/, dialog/, core/"
+# Packaging: collect files and create zip, then rename
+Log-Info "Creating $EXT.zip..."
+Log-Verbose "Including: *.lua, *.json, io/, math/, render/, utils/, dialog/, core/"
 
-try {
-    # Collect top-level lua/json files
-    $paths = @()
-    $paths += Get-ChildItem -Path $scriptDir -Filter *.lua -File -Recurse:$false | ForEach-Object { $_.FullName }
-    $paths += Get-ChildItem -Path $scriptDir -Filter *.json -File -Recurse:$false | ForEach-Object { $_.FullName }
-
-    # Include specific directories
-    $dirsToInclude = @("io", "math", "render", "utils", "dialog", "core")
-    foreach ($dir in $dirsToInclude) {
-        $dirPath = Join-Path $scriptDir $dir
-        if (Test-Path $dirPath) {
-            $paths += Get-ChildItem -Path $dirPath -Recurse -File | ForEach-Object { $_.FullName }
-            Log-Verbose "Added files from $dir directory"
-        }
+# Build list of files with relative paths to preserve structure
+$files = @()
+$files += Get-ChildItem -Path $scriptDir -Filter *.lua -File -Depth 0 -ErrorAction SilentlyContinue
+$files += Get-ChildItem -Path $scriptDir -Filter *.json -File -Depth 0 -ErrorAction SilentlyContinue
+$dirs = @("io","math","render","utils","dialog","core")
+foreach ($d in $dirs) {
+    $p = Join-Path $scriptDir $d
+    if (Test-Path $p) { 
+        $files += Get-ChildItem -Path $p -Recurse -File | Where-Object { -not $_.Name.EndsWith('.backup') }
+        Log-Verbose "Added files from $d" 
     }
+}
+Log-Verbose "Total files to include: $($files.Count)"
 
-    # Verify native libraries exist if compilation was enabled
-    if ($ShouldCompile -and -not $DryRun) {
-        $dllPath = Join-Path $scriptDir "render\bin\asevoxel_native.dll"
-        if (-not (Test-Path $dllPath)) {
-            Log-Error "Expected compiled library not found: $dllPath"
-            exit 1
-        }
-        Log-Verbose "Verified native library exists: asevoxel_native.dll"
-    }
-
-    # Deduplicate list
-    $paths = $paths | Select-Object -Unique
-    Log-Verbose "Total files to include: $($paths.Count)"
-
-    if ($paths.Count -eq 0) {
-        Log-Info "No files found to add to archive" -ForegroundColor Yellow
-        if (-not $DryRun) {
-            [System.IO.Compression.ZipFile]::Open($tempZipFile,'Create').Dispose()
-        } else {
-            Log-DryRun "Would create empty archive"
+if ($files.Count -eq 0) {
+    Log-Info "No files found to add to archive"
+    if (-not $DRY_RUN_FLAG) { [System.IO.Compression.ZipFile]::Open($tempZip,'Create').Dispose() } else { Log-Dry "Would create empty archive" }
+} else {
+    if (-not $DRY_RUN_FLAG) {
+        # Use System.IO.Compression to preserve folder structure
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        if (Test-Path $tempZip) { Remove-Item $tempZip -Force }
+        
+        $zip = [System.IO.Compression.ZipFile]::Open($tempZip, 'Create')
+        try {
+            foreach ($file in $files) {
+                # Calculate relative path from script directory
+                $relativePath = $file.FullName.Substring($scriptDir.Length + 1).Replace('\', '/')
+                Log-Verbose "Adding: $relativePath"
+                [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $file.FullName, $relativePath) | Out-Null
+            }
+            Log-Verbose "Archive created with $($files.Count) files"
+        } finally {
+            $zip.Dispose()
         }
     } else {
-        if (-not $DryRun) {
-            # Create the zip file from the collected files
-            Compress-Archive -LiteralPath $paths -DestinationPath $tempZipFile -Force
-            Log-Verbose "Archive created successfully"
-        } else {
-            Log-DryRun "Would compress $($paths.Count) files into archive"
-        }
+        Log-Dry "Would compress $($files.Count) files into $tempZip preserving folder structure"
     }
-
-    if ((Test-Path $tempZipFile) -or $DryRun) {
-        # Rename the .zip file to .aseprite-extension
-        Log-Info "Renaming $tempZipFile to $outputFile..."
-        if (-not $DryRun) {
-            if (Test-Path $outputFile) {
-                Remove-Item $outputFile -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Milliseconds 200
-            }
-            Rename-Item -Path $tempZipFile -NewName $outputFile -Force
-
-            if (Test-Path $outputFile) {
-                Log-Info "$outputFile created successfully!" -ForegroundColor Green
-                if ($VerbosityLevel -ge 2) {
-                    $fileInfo = Get-Item $outputFile
-                    Log-Verbose "Extension details:"
-                    Log-Verbose "  Size: $($fileInfo.Length) bytes"
-                    Log-Verbose "  Path: $($fileInfo.FullName)"
-                }
-            } else {
-                Log-Error "Failed to rename zip file"
-            }
-        } else {
-            Log-DryRun "Would rename to $outputFile"
-        }
-    } else {
-        Log-Error "Failed to create zip file"
-    }
-} catch {
-    Log-Error "Exception occurred: $_"
 }
 
-Log-Info "Done! Version: $newVersion"
+# Rename .zip to .aseprite-extension
+if ((Test-Path $tempZip) -or $DRY_RUN_FLAG) {
+    Log-Info "Renaming $tempZip to $outFile..."
+    if (-not $DRY_RUN_FLAG) {
+        if (Test-Path $outFile) { Remove-Item $outFile -Force -ErrorAction SilentlyContinue }
+        Rename-Item -Path $tempZip -NewName $outFile -Force
+        Log-Info "$outFile created successfully!"
+        # Try to set executable bit if chmod exists (on *nix)
+        $chmod = Get-Command chmod -ErrorAction SilentlyContinue
+        if ($chmod) { & chmod +x $outFile }
+    } else {
+        Log-Dry "Would rename to $outFile"
+        Log-Dry "Would make $outFile executable (if applicable)"
+    }
+} else {
+    Log-Error "Failed to create zip file"
+}
+
+Log-Info "Done! Version: $NEW_VERSION"
