@@ -308,4 +308,58 @@ function shaderStack.listShaders(category)
   end
 end
 
+-- Convert shader stack config from params format to execution format
+function shaderStack.prepareStackConfig(params)
+  -- Extract shader configuration from various param formats
+  local config = {lighting = {}, fx = {}}
+  
+  -- Check for direct shaderStack parameter
+  if params.shaderStack then
+    return params.shaderStack
+  end
+  
+  -- Check for fxStack (legacy format)
+  if params.fxStack then
+    for _, module in ipairs(params.fxStack) do
+      local entry = {
+        id = module.type or "unknown",
+        enabled = module.enabled ~= false,
+        params = module.params or {},
+        inputFrom = module.inputFrom or "previous"
+      }
+      
+      -- Determine if it's a lighting or fx shader based on ID
+      if shaderStack.registry.lighting[entry.id] then
+        table.insert(config.lighting, entry)
+      elseif shaderStack.registry.fx[entry.id] then
+        table.insert(config.fx, entry)
+      end
+    end
+  end
+  
+  -- Check for specific lighting parameters (dynamic, basic, etc.)
+  if params.lighting then
+    -- Dynamic lighting configuration
+    table.insert(config.lighting, {
+      id = "dynamic",
+      enabled = true,
+      params = params.lighting,
+      inputFrom = "base_color"
+    })
+  elseif params.basicShadeIntensity or params.basicLightIntensity then
+    -- Basic lighting configuration
+    table.insert(config.lighting, {
+      id = "basic",
+      enabled = true,
+      params = {
+        shadeIntensity = params.basicShadeIntensity or 50,
+        lightIntensity = params.basicLightIntensity or 50
+      },
+      inputFrom = "base_color"
+    })
+  end
+  
+  return config
+end
+
 return shaderStack

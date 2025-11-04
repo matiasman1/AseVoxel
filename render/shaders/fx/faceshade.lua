@@ -48,58 +48,46 @@ faceshade.paramSchema = {
     tooltip = "Color to tint with in Alpha mode (when enabled)"
   },
   {
-    name = "topBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 255,
+    name = "topColor",
+    type = "color",
+    default = {r=255, g=255, b=255},
     label = "Top",
-    tooltip = "Brightness for top-facing faces (0-255)"
+    tooltip = "Color for top-facing faces"
   },
   {
-    name = "bottomBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 128,
+    name = "bottomColor",
+    type = "color",
+    default = {r=255, g=255, b=255},
     label = "Bottom",
-    tooltip = "Brightness for bottom-facing faces (0-255)"
+    tooltip = "Color for bottom-facing faces"
   },
   {
-    name = "frontBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 200,
+    name = "frontColor",
+    type = "color",
+    default = {r=255, g=255, b=255},
     label = "Front",
-    tooltip = "Brightness for front-facing faces (0-255)"
+    tooltip = "Color for front-facing faces"
   },
   {
-    name = "backBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 150,
+    name = "backColor",
+    type = "color",
+    default = {r=255, g=255, b=255},
     label = "Back",
-    tooltip = "Brightness for back-facing faces (0-255)"
+    tooltip = "Color for back-facing faces"
   },
   {
-    name = "leftBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 180,
+    name = "leftColor",
+    type = "color",
+    default = {r=255, g=255, b=255},
     label = "Left",
-    tooltip = "Brightness for left-facing faces (0-255)"
+    tooltip = "Color for left-facing faces"
   },
   {
-    name = "rightBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 220,
+    name = "rightColor",
+    type = "color",
+    default = {r=255, g=255, b=255},
     label = "Right",
-    tooltip = "Brightness for right-facing faces (0-255)"
+    tooltip = "Color for right-facing faces"
   }
 }
 
@@ -155,14 +143,41 @@ function faceshade.process(shaderData, params)
   local enableTint = params.enableTint or false
   local alphaTint = params.alphaTint or {r=255, g=255, b=255}
   
-  local brightness = {
-    top = params.topBrightness or 255,
-    bottom = params.bottomBrightness or 128,
-    front = params.frontBrightness or 200,
-    back = params.backBrightness or 150,
-    left = params.leftBrightness or 180,
-    right = params.rightBrightness or 220
+  -- Face colors (matching VoxelMaker behavior)
+  local faceColors = {
+    top = params.topColor or {r=255, g=255, b=255},
+    bottom = params.bottomColor or {r=255, g=255, b=255},
+    front = params.frontColor or {r=255, g=255, b=255},
+    back = params.backColor or {r=255, g=255, b=255},
+    left = params.leftColor or {r=255, g=255, b=255},
+    right = params.rightColor or {r=255, g=255, b=255}
   }
+  
+  -- Legacy compatibility: convert brightness values to colors if provided
+  if params.topBrightness then
+    local b = params.topBrightness
+    faceColors.top = {r=b, g=b, b=b}
+  end
+  if params.bottomBrightness then
+    local b = params.bottomBrightness
+    faceColors.bottom = {r=b, g=b, b=b}
+  end
+  if params.frontBrightness then
+    local b = params.frontBrightness
+    faceColors.front = {r=b, g=b, b=b}
+  end
+  if params.backBrightness then
+    local b = params.backBrightness
+    faceColors.back = {r=b, g=b, b=b}
+  end
+  if params.leftBrightness then
+    local b = params.leftBrightness
+    faceColors.left = {r=b, g=b, b=b}
+  end
+  if params.rightBrightness then
+    local b = params.rightBrightness
+    faceColors.right = {r=b, g=b, b=b}
+  end
   
   -- Process each face
   for i, face in ipairs(shaderData.faces or {}) do
@@ -174,35 +189,36 @@ function faceshade.process(shaderData, params)
         end
       end
       
-      -- Determine face direction from normal
+      -- Determine face direction from face name or normal
       local direction = face.face or getFaceDirection(face.normal)
       
-      -- Get brightness for this direction
-      local b = brightness[direction] or 255
+      -- Get color for this direction
+      local faceColor = faceColors[direction] or {r=255, g=255, b=255}
       
       if shadingMode == "alpha" then
-        -- Alpha mode: multiply RGB by brightness factor
-        local factor = b / 255
+        -- Alpha mode: use color alpha channel as brightness, RGB for optional tint
+        local brightness = (faceColor.a or 255) / 255
         
         if enableTint then
-          -- Apply tint as well
-          local tintR = (alphaTint.r or 255) / 255
-          local tintG = (alphaTint.g or 255) / 255
-          local tintB = (alphaTint.b or 255) / 255
+          -- Apply color as tint
+          local tintR = (faceColor.r or 255) / 255
+          local tintG = (faceColor.g or 255) / 255
+          local tintB = (faceColor.b or 255) / 255
           
-          face.color.r = math.floor(face.color.r * factor * tintR + 0.5)
-          face.color.g = math.floor(face.color.g * factor * tintG + 0.5)
-          face.color.b = math.floor(face.color.b * factor * tintB + 0.5)
+          face.color.r = math.floor(face.color.r * brightness * tintR + 0.5)
+          face.color.g = math.floor(face.color.g * brightness * tintG + 0.5)
+          face.color.b = math.floor(face.color.b * brightness * tintB + 0.5)
         else
-          face.color.r = math.floor(face.color.r * factor + 0.5)
-          face.color.g = math.floor(face.color.g * factor + 0.5)
-          face.color.b = math.floor(face.color.b * factor + 0.5)
+          -- Just apply brightness
+          face.color.r = math.floor(face.color.r * brightness + 0.5)
+          face.color.g = math.floor(face.color.g * brightness + 0.5)
+          face.color.b = math.floor(face.color.b * brightness + 0.5)
         end
       elseif shadingMode == "literal" then
-        -- Literal mode: replace RGB with brightness level
-        face.color.r = b
-        face.color.g = b
-        face.color.b = b
+        -- Literal mode: replace RGB with face color
+        face.color.r = faceColor.r or 255
+        face.color.g = faceColor.g or 255
+        face.color.b = faceColor.b or 255
       end
       
       -- Alpha unchanged

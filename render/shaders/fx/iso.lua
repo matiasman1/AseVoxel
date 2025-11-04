@@ -41,38 +41,25 @@ iso.paramSchema = {
     tooltip = "Apply color tint in Alpha mode"
   },
   {
-    name = "alphaTint",
+    name = "topColor",
     type = "color",
     default = {r=255, g=255, b=255},
-    label = "Tint Color",
-    tooltip = "Color to tint with in Alpha mode (when enabled)"
+    label = "Top",
+    tooltip = "Color for top/bottom isometric faces"
   },
   {
-    name = "topBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 255,
-    label = "Top/Bottom",
-    tooltip = "Brightness for top and bottom faces (0-255)"
-  },
-  {
-    name = "leftBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 180,
+    name = "leftColor",
+    type = "color",
+    default = {r=235, g=235, b=235},
     label = "Left",
-    tooltip = "Brightness for left-facing faces (0-255)"
+    tooltip = "Color for left isometric faces"
   },
   {
-    name = "rightBrightness",
-    type = "slider",
-    min = 0,
-    max = 255,
-    default = 220,
+    name = "rightColor",
+    type = "color",
+    default = {r=210, g=210, b=210},
     label = "Right",
-    tooltip = "Brightness for right-facing faces (0-255)"
+    tooltip = "Color for right isometric faces"
   }
 }
 
@@ -92,28 +79,74 @@ local function isPureColor(r, g, b)
   return isPureR or isPureG or isPureB or isPureC or isPureM or isPureY or isPureK or isPureW
 end
 
--- Helper: Determine isometric face role (top, left, or right)
-local function getIsoRole(normal, viewDir)
-  -- Project normal onto camera view space
-  -- Top = most upward facing (Y dominant)
-  -- Left/Right = based on X projection in camera space
+-- Isometric face selection algorithm (matching VoxelMaker fxStack.lua)
+local function selectIsoFaces(faces, threshold)
+  threshold = threshold or 0.01
   
-  local absY = math.abs(normal.y)
-  local absX = math.abs(normal.x)
-  local absZ = math.abs(normal.z)
-  
-  -- If Y is dominant, it's top or bottom
-  if absY > absX and absY > absZ then
-    return "top"
+  -- Build lookup by face name
+  local faceMap = {}
+  for _, face in ipairs(faces) do
+    if face.face and face.normal then
+      faceMap[face.face] = {
+        normal = face.normal,
+        dot = face.normal.z  -- Dot with camera direction (0,0,1)
+      }
+    end
   end
   
-  -- Otherwise, determine left or right based on X
-  -- Negative X = left, Positive X = right
-  if normal.x < 0 then
-    return "left"
+  -- 1) Pick TOP from physical top/bottom based on which faces toward camera more
+  local dTop = (faceMap.top and faceMap.top.dot) or -math.huge
+  local dBottom = (faceMap.bottom and faceMap.bottom.dot) or -math.huge
+  local isoTop = (dTop >= dBottom) and "top" or "bottom"
+  
+  -- 2) Collect side candidates (front/back/left/right)
+  local sideNames = {"front", "back", "left", "right"}
+  local sides = {}
+  for _, name in ipairs(sideNames) do
+    local info = faceMap[name]
+    if info then
+      table.insert(sides, {
+        face = name,
+        dot = info.dot or -math.huge,
+        nx = info.normal.x or 0
+      })
+    end
+  end
+  
+  -- Prefer visible faces (dot > threshold). If fewer than 2, fall back to best by dot
+  local visibles = {}
+  for _, s in ipairs(sides) do
+    if s.dot > threshold then
+      table.insert(visibles, s)
+    end
+  end
+  
+  local pool = (#visibles >= 2) and visibles or sides
+  table.sort(pool, function(a, b) return a.dot > b.dot end)
+  
+  local s1 = pool[1]
+  local s2 = pool[2]
+  
+  if not s1 or not s2 then
+    return {top = isoTop, left = nil, right = nil}
+  end
+  
+  -- 3) Assign LEFT/RIGHT by normal.x
+  -- Larger +nx => RIGHT; smaller (or negative) => LEFT
+  local isoLeft, isoRight
+  if s1.nx > s2.nx then
+    isoRight = s1.face
+    isoLeft = s2.face
   else
-    return "right"
+    isoRight = s2.face
+    isoLeft = s1.face
   end
+  
+  return {
+    top = isoTop,
+    left = isoLeft,
+    right = isoRight
+  }
 end
 
 function iso.process(shaderData, params)
@@ -121,23 +154,51 @@ function iso.process(shaderData, params)
   local shadingMode = params.shadingMode or "alpha"
   local materialMode = params.materialMode or false
   local enableTint = params.enableTint or false
-  local alphaTint = params.alphaTint or {r=255, g=255, b=255}
   
-  local brightness = {
-    top = params.topBrightness or 255,
-    left = params.leftBrightness or 180,
-    right = params.rightBrightness or 220
+  -- Isometric colors (matching VoxelMaker behavior)
+  local isoColors = {
+    top = params.topColor or {r=255, g=255, b=255},
+    left = params.leftColor or {r=235, g=235, b=235},
+    right = params.rightColor or {r=210, g=210, b=210}
   }
   
-  -- Get camera view direction
-  local viewDir = shaderData.camera.direction
-  if not viewDir then
-    viewDir = {x = 0, y = 0, z = 1}
+  -- Legacy compatibility: convert brightness values to colors if provided
+  if params.topBrightness then
+    local b = params.topBrightness
+    isoColors.top = {r=b, g=b, b=b}
+  end
+  if params.leftBrightness then
+    local b = params.leftBrightness
+    isoColors.left = {r=b, g=b, b=b}
+  end
+  if params.rightBrightness then
+    local b = params.rightBrightness
+    isoColors.right = {r=b, g=b, b=b}
+  end
+  
+  -- Select isometric faces based on rotation
+  local isoMapping = selectIsoFaces(shaderData.faces or {}, 0.01)
+  
+  -- Build reverse mapping: physical face -> iso role
+  local faceToRole = {}
+  if isoMapping.top then
+    faceToRole[isoMapping.top] = "top"
+    -- In alpha mode, opposite face also uses top color
+    local opposite = {top="bottom", bottom="top"}
+    if opposite[isoMapping.top] then
+      faceToRole[opposite[isoMapping.top]] = "top"
+    end
+  end
+  if isoMapping.left then
+    faceToRole[isoMapping.left] = "left"
+  end
+  if isoMapping.right then
+    faceToRole[isoMapping.right] = "right"
   end
   
   -- Process each face
   for i, face in ipairs(shaderData.faces or {}) do
-    if face.normal and face.color then
+    if face.face and face.color then
       -- Material mode check: skip pure colors
       if materialMode then
         if isPureColor(face.color.r, face.color.g, face.color.b) then
@@ -145,33 +206,38 @@ function iso.process(shaderData, params)
         end
       end
       
-      -- Determine isometric role
-      local role = getIsoRole(face.normal, viewDir)
-      local b = brightness[role] or 255
+      -- Determine isometric role for this face
+      local role = faceToRole[face.face]
+      if not role then
+        goto continue  -- Face not part of isometric selection
+      end
+      
+      local isoColor = isoColors[role] or {r=255, g=255, b=255}
       
       if shadingMode == "alpha" then
-        -- Alpha mode: multiply RGB by brightness factor
-        local factor = b / 255
+        -- Alpha mode: use color alpha channel as brightness
+        local brightness = (isoColor.a or 255) / 255
         
         if enableTint then
-          -- Apply tint as well
-          local tintR = (alphaTint.r or 255) / 255
-          local tintG = (alphaTint.g or 255) / 255
-          local tintB = (alphaTint.b or 255) / 255
+          -- Apply color as tint
+          local tintR = (isoColor.r or 255) / 255
+          local tintG = (isoColor.g or 255) / 255
+          local tintB = (isoColor.b or 255) / 255
           
-          face.color.r = math.floor(face.color.r * factor * tintR + 0.5)
-          face.color.g = math.floor(face.color.g * factor * tintG + 0.5)
-          face.color.b = math.floor(face.color.b * factor * tintB + 0.5)
+          face.color.r = math.floor(face.color.r * brightness * tintR + 0.5)
+          face.color.g = math.floor(face.color.g * brightness * tintG + 0.5)
+          face.color.b = math.floor(face.color.b * brightness * tintB + 0.5)
         else
-          face.color.r = math.floor(face.color.r * factor + 0.5)
-          face.color.g = math.floor(face.color.g * factor + 0.5)
-          face.color.b = math.floor(face.color.b * factor + 0.5)
+          -- Just apply brightness
+          face.color.r = math.floor(face.color.r * brightness + 0.5)
+          face.color.g = math.floor(face.color.g * brightness + 0.5)
+          face.color.b = math.floor(face.color.b * brightness + 0.5)
         end
       elseif shadingMode == "literal" then
-        -- Literal mode: replace RGB with brightness level
-        face.color.r = b
-        face.color.g = b
-        face.color.b = b
+        -- Literal mode: replace RGB with iso color
+        face.color.r = isoColor.r or 255
+        face.color.g = isoColor.g or 255
+        face.color.b = isoColor.b or 255
       end
       
       -- Alpha unchanged
