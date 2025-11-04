@@ -34,6 +34,18 @@ local function getShaderUI()
   return AseVoxel.render.shader_ui
 end
 
+local function getNativeConfig()
+  local ok, cfg = pcall(function()
+    return require("render.native_config")
+  end)
+  if ok then return cfg end
+  ok, cfg = pcall(function()
+    return require("native_config")
+  end)
+  if ok then return cfg end
+  return nil
+end
+
 local function getMathUtils()
   return AseVoxel.mathUtils
 end
@@ -908,8 +920,20 @@ function mainDialog.create(viewParams, schedulePreview, rotateModel, updateLayer
       end
       
       -- Get available lighting shaders
-      local availableShaders = shaderStack.listShaders("lighting")
-      if not availableShaders or #availableShaders == 0 then
+      local availableShaders = shaderStack.listShaders("lighting") or {}
+      local nativeConfig = getNativeConfig()
+      if nativeConfig and nativeConfig.forceNative then
+        nativeConfig:refreshNativeShaders()
+        local allowed = (nativeConfig.nativeShaders and nativeConfig.nativeShaders.lighting) or {}
+        local filtered = {}
+        for _, shaderInfo in ipairs(availableShaders) do
+          if allowed[shaderInfo.id] then
+            table.insert(filtered, shaderInfo)
+          end
+        end
+        availableShaders = filtered
+      end
+      if #availableShaders == 0 then
         app.alert("No lighting shaders available!")
         return
       end
@@ -1119,8 +1143,20 @@ function mainDialog.create(viewParams, schedulePreview, rotateModel, updateLayer
       end
       
       -- Get available FX shaders
-      local availableShaders = shaderStack.listShaders("fx")
-      if not availableShaders or #availableShaders == 0 then
+      local availableShaders = shaderStack.listShaders("fx") or {}
+      local nativeConfig = getNativeConfig()
+      if nativeConfig and nativeConfig.forceNative then
+        nativeConfig:refreshNativeShaders()
+        local allowed = (nativeConfig.nativeShaders and nativeConfig.nativeShaders.fx) or {}
+        local filtered = {}
+        for _, shaderInfo in ipairs(availableShaders) do
+          if allowed[shaderInfo.id] then
+            table.insert(filtered, shaderInfo)
+          end
+        end
+        availableShaders = filtered
+      end
+      if #availableShaders == 0 then
         app.alert("No FX shaders available!")
         return
       end

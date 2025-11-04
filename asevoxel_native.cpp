@@ -717,6 +717,49 @@ struct ShaderParams {
   std::unordered_map<std::string, std::array<unsigned char, 4>> colors;
 };
 
+static ShaderParams parseShaderParams(lua_State* L, int tableIdx) {
+  ShaderParams params;
+  if (!lua_istable(L, tableIdx)) return params;
+
+  lua_pushnil(L);
+  while (lua_next(L, tableIdx) != 0) {
+    if (!lua_isstring(L, -2)) {
+      lua_pop(L, 1);
+      continue;
+    }
+    std::string key = lua_tostring(L, -2);
+    if (lua_isnumber(L, -1)) {
+      params.numbers[key] = lua_tonumber(L, -1);
+    } else if (lua_isstring(L, -1)) {
+      params.strings[key] = lua_tostring(L, -1);
+    } else if (lua_isboolean(L, -1)) {
+      params.bools[key] = lua_toboolean(L, -1) != 0;
+    } else if (lua_istable(L, -1)) {
+      lua_getfield(L, -1, "r");
+      bool isColor = lua_isnumber(L, -1);
+      lua_pop(L, 1);
+      if (isColor) {
+        std::array<unsigned char, 4> color = {255,255,255,255};
+        lua_getfield(L, -1, "r");
+        if (lua_isnumber(L, -1)) color[0] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "g");
+        if (lua_isnumber(L, -1)) color[1] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "b");
+        if (lua_isnumber(L, -1)) color[2] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "a");
+        if (lua_isnumber(L, -1)) color[3] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        params.colors[key] = color;
+      }
+    }
+    lua_pop(L, 1);
+  }
+  return params;
+}
+
 // Helper: normalize vector
 static inline void normalizeVec(float& x, float& y, float& z) {
   float len = std::sqrt(x*x + y*y + z*z);
@@ -908,7 +951,7 @@ static void shader_faceshade(ShaderData& data, const ShaderParams& params) {
 
 // SHADER: Iso
 static void shader_iso(ShaderData& data, const ShaderParams& params) {
-  std::string shadingMode = params.strings.count("shadingMode") ? 
+  std::string shadingMode = params.strings.count("shadingMode") ?
     params.strings.at("shadingMode") : "alpha";
   bool materialMode = params.bools.count("materialMode") && params.bools.at("materialMode");
   bool enableTint = params.bools.count("enableTint") && params.bools.at("enableTint");
@@ -998,6 +1041,71 @@ static void shader_iso(ShaderData& data, const ShaderParams& params) {
   }
 }
 
+static void shader_faceshade_camera(ShaderData& data, const ShaderParams& params) {
+  float frontBrightness = params.numbers.count("frontBrightness") ?
+    (float)params.numbers.at("frontBrightness") : 255.0f;
+  float topBrightness = params.numbers.count("topBrightness") ?
+    (float)params.numbers.at("topBrightness") : 220.0f;
+  float leftBrightness = params.numbers.count("leftBrightness") ?
+    (float)params.numbers.at("leftBrightness") : 180.0f;
+  float rightBrightness = params.numbers.count("rightBrightness") ?
+    (float)params.numbers.at("rightBrightness") : 200.0f;
+  float bottomBrightness = params.numbers.count("bottomBrightness") ?
+    (float)params.numbers.at("bottomBrightness") : 128.0f;
+
+  float viewX = data.cameraDirX;
+  float viewY = data.cameraDirY;
+  float viewZ = data.cameraDirZ;
+  normalizeVec(viewX, viewY, viewZ);
+  if (std::fabs(viewX) < 1e-6f && std::fabs(viewY) < 1e-6f && std::fabs(viewZ) < 1e-6f) {
+    viewX = 0.0f; viewY = 0.0f; viewZ = -1.0f;
+  }
+
+  float upX = 0.0f, upY = 1.0f, upZ = 0.0f;
+  float rightX = viewY*upZ - viewZ*upY;
+  float rightY = viewZ*upX - viewX*upZ;
+  float rightZ = viewX*upY - viewY*upX;
+  normalizeVec(rightX, rightY, rightZ);
+  if (std::fabs(rightX) < 1e-6f && std::fabs(rightY) < 1e-6f && std::fabs(rightZ) < 1e-6f) {
+    rightX = 1.0f; rightY = 0.0f; rightZ = 0.0f;
+  }
+  upX = rightY*viewZ - rightZ*viewY;
+  upY = rightZ*viewX - rightX*viewZ;
+  upZ = rightX*viewY - rightY*viewX;
+  normalizeVec(upX, upY, upZ);
+
+  for (auto& face : data.faces) {
+    float dotView = face.normalX*viewX + face.normalY*viewY + face.normalZ*viewZ;
+    float dotUp = face.normalX*upX + face.normalY*upY + face.normalZ*upZ;
+    float dotRight = face.normalX*rightX + face.normalY*rightY + face.normalZ*rightZ;
+
+    float absView = std::fabs(dotView);
+    float absUp = std::fabs(dotUp);
+    float absRight = std::fabs(dotRight);
+    const char* dir = "front";
+    if (absView >= absUp && absView >= absRight) {
+      dir = "front";
+    } else if (absUp >= absRight) {
+      dir = (dotUp >= 0.0f) ? "top" : "bottom";
+    } else {
+      dir = (dotRight >= 0.0f) ? "right" : "left";
+    }
+
+    float factor = 1.0f;
+    if (strcmp(dir, "front") == 0) factor = frontBrightness / 255.0f;
+    else if (strcmp(dir, "top") == 0) factor = topBrightness / 255.0f;
+    else if (strcmp(dir, "bottom") == 0) factor = bottomBrightness / 255.0f;
+    else if (strcmp(dir, "left") == 0) factor = leftBrightness / 255.0f;
+    else if (strcmp(dir, "right") == 0) factor = rightBrightness / 255.0f;
+
+    if (factor < 0.0f) factor = 0.0f;
+    if (factor > 1.0f) factor = 1.0f;
+    face.r = (unsigned char)std::min(255, (int)(face.r * factor + 0.5f));
+    face.g = (unsigned char)std::min(255, (int)(face.g * factor + 0.5f));
+    face.b = (unsigned char)std::min(255, (int)(face.b * factor + 0.5f));
+  }
+}
+
 // Shader registry
 typedef void (*ShaderFunc)(ShaderData&, const ShaderParams&);
 static std::unordered_map<std::string, ShaderFunc> g_lightingShaders = {
@@ -1006,6 +1114,7 @@ static std::unordered_map<std::string, ShaderFunc> g_lightingShaders = {
 };
 static std::unordered_map<std::string, ShaderFunc> g_fxShaders = {
   {"faceshade", shader_faceshade},
+  {"faceshadeCamera", shader_faceshade_camera},
   {"iso", shader_iso}
 };
 
@@ -1178,6 +1287,425 @@ static int l_precompute_unit_cube_vertices(lua_State* L) {
 // ======================== END OPTIMIZED VISIBILITY SYSTEM ========================
 
 } // anonymous namespace
+
+static int l_render_native_stack(lua_State* L) {
+  if (!lua_istable(L, 1) || !lua_istable(L, 2)) {
+    return luaL_error(L, "expected (voxels, params)");
+  }
+
+  struct StackEntry {
+    std::string id;
+    bool enabled = true;
+    ShaderParams params;
+  };
+
+  std::vector<StackEntry> lightingEntries;
+  std::vector<StackEntry> fxEntries;
+  if (lua_istable(L, 3)) {
+    lua_getfield(L, 3, "lighting");
+    if (lua_istable(L, -1)) {
+      int count = lua_rawlen(L, -1);
+      for (int i = 1; i <= count; ++i) {
+        lua_rawgeti(L, -1, i);
+        if (lua_istable(L, -1)) {
+          StackEntry entry;
+          lua_getfield(L, -1, "id");
+          const char* id = lua_tostring(L, -1);
+          if (id) entry.id = id;
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "enabled");
+          entry.enabled = !lua_isboolean(L, -1) || lua_toboolean(L, -1);
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "params");
+          entry.params = parseShaderParams(L, lua_gettop(L));
+          lua_pop(L, 1);
+          if (!entry.id.empty()) lightingEntries.push_back(std::move(entry));
+        }
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 1);
+
+    lua_getfield(L, 3, "fx");
+    if (lua_istable(L, -1)) {
+      int count = lua_rawlen(L, -1);
+      for (int i = 1; i <= count; ++i) {
+        lua_rawgeti(L, -1, i);
+        if (lua_istable(L, -1)) {
+          StackEntry entry;
+          lua_getfield(L, -1, "id");
+          const char* id = lua_tostring(L, -1);
+          if (id) entry.id = id;
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "enabled");
+          entry.enabled = !lua_isboolean(L, -1) || lua_toboolean(L, -1);
+          lua_pop(L, 1);
+          lua_getfield(L, -1, "params");
+          entry.params = parseShaderParams(L, lua_gettop(L));
+          lua_pop(L, 1);
+          if (!entry.id.empty()) fxEntries.push_back(std::move(entry));
+        }
+        lua_pop(L, 1);
+      }
+    }
+    lua_pop(L, 1);
+  }
+
+  int width = (int)getNum(L, 2, "width", 200);
+  int height = (int)getNum(L, 2, "height", 200);
+
+  float scale = (float)getNum(L, 2, "scale", -12345.0);
+  if (scale < 0) scale = (float)getNum(L, 2, "scaleLevel", 1.0);
+  if (scale <= 0.f) scale = 1.f;
+
+  bool meshMode = false;
+  lua_getfield(L, 2, "mesh");
+  if (lua_isboolean(L, -1)) meshMode = lua_toboolean(L, -1) != 0;
+  lua_pop(L, 1);
+  if (!meshMode) {
+    lua_getfield(L, 2, "meshMode");
+    if (lua_isboolean(L, -1)) meshMode = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+  }
+
+  float xRotDeg = (float)getNum(L, 2, "xRotation", 0.0);
+  float yRotDeg = (float)getNum(L, 2, "yRotation", 0.0);
+  float zRotDeg = (float)getNum(L, 2, "zRotation", 0.0);
+  float fovDeg = (float)getNum(L, 2, "fovDegrees", 0.0);
+  lua_getfield(L, 2, "orthogonal");
+  bool orthogonal = lua_toboolean(L, -1) != 0;
+  lua_pop(L, 1);
+  std::string perspRef = "middle";
+  lua_getfield(L, 2, "perspectiveScaleRef");
+  if (lua_isstring(L, -1)) perspRef = lua_tostring(L, -1);
+  lua_pop(L, 1);
+
+  unsigned char bgR = 0, bgG = 0, bgB = 0, bgA = 0;
+  lua_getfield(L, 2, "backgroundColor");
+  if (lua_istable(L, -1)) {
+    bgR = (unsigned char)getFieldInteger(L, -1, "r", 0);
+    bgG = (unsigned char)getFieldInteger(L, -1, "g", 0);
+    bgB = (unsigned char)getFieldInteger(L, -1, "b", 0);
+    bgA = (unsigned char)getFieldInteger(L, -1, "a", 0);
+  }
+  lua_pop(L, 1);
+
+  size_t count = lua_rawlen(L, 1);
+  lua_createtable(L, 0, 3);
+  if (count == 0) {
+    lua_pushinteger(L, width); lua_setfield(L, -2, "width");
+    lua_pushinteger(L, height); lua_setfield(L, -2, "height");
+    lua_pushlstring(L, "", 0); lua_setfield(L, -2, "pixels");
+    return 1;
+  }
+
+  std::vector<Voxel> voxels;
+  voxels.reserve(count);
+  float minX = 1e9f, minY = 1e9f, minZ = 1e9f;
+  float maxX = -1e9f, maxY = -1e9f, maxZ = -1e9f;
+  for (size_t i = 1; i <= count; ++i) {
+    lua_rawgeti(L, 1, (int)i);
+    if (lua_istable(L, -1)) {
+      int tblIdx = lua_gettop(L);
+      Voxel v{0,0,0,255,255,255,255};
+      lua_rawgeti(L, tblIdx, 1);
+      bool numeric = lua_isnumber(L, -1) != 0;
+      lua_pop(L, 1);
+      if (numeric) {
+        lua_rawgeti(L, tblIdx, 1); v.x = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, tblIdx, 2); v.y = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, tblIdx, 3); v.z = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, tblIdx, 4); v.r = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, tblIdx, 5); v.g = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, tblIdx, 6); v.b = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+        lua_rawgeti(L, tblIdx, 7); v.a = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+      } else {
+        v.x = (float)getNum(L, tblIdx, "x", 0.0);
+        v.y = (float)getNum(L, tblIdx, "y", 0.0);
+        v.z = (float)getNum(L, tblIdx, "z", 0.0);
+        lua_getfield(L, tblIdx, "color");
+        if (lua_istable(L, -1)) {
+          v.r = (unsigned char)getFieldInteger(L, -1, "r", 255);
+          v.g = (unsigned char)getFieldInteger(L, -1, "g", 255);
+          v.b = (unsigned char)getFieldInteger(L, -1, "b", 255);
+          v.a = (unsigned char)getFieldInteger(L, -1, "a", 255);
+        }
+        lua_pop(L, 1);
+      }
+      if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+      if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+      if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
+      voxels.push_back(v);
+    }
+    lua_pop(L, 1);
+  }
+
+  std::unordered_set<std::string> occ;
+  if (meshMode) {
+    occ.reserve(voxels.size() * 2);
+    for (auto& v : voxels) {
+      int ix = (int)std::lround(v.x);
+      int iy = (int)std::lround(v.y);
+      int iz = (int)std::lround(v.z);
+      occ.emplace(std::to_string(ix) + "," + std::to_string(iy) + "," + std::to_string(iz));
+    }
+  }
+
+  float midX = 0.5f * (minX + maxX);
+  float midY = 0.5f * (minY + maxY);
+  float midZ = 0.5f * (minZ + maxZ);
+  float sizeX = maxX - minX + 1.f;
+  float sizeY = maxY - minY + 1.f;
+  float sizeZ = maxZ - minZ + 1.f;
+  float maxDim = std::max(sizeX, std::max(sizeY, sizeZ));
+
+  float RX = xRotDeg * (float)PI / 180.f;
+  float RY = yRotDeg * (float)PI / 180.f;
+  float RZ = zRotDeg * (float)PI / 180.f;
+  float cx = std::cos(RX), sx = std::sin(RX);
+  float cy = std::cos(RY), sy = std::sin(RY);
+  float cz = std::cos(RZ), sz = std::sin(RZ);
+
+  bool perspective = (!orthogonal && fovDeg > 0.f);
+  float focalLength = 0.f;
+  float camDist;
+  if (perspective) {
+    fovDeg = std::max(5.f, std::min(75.f, fovDeg));
+    float warpT = (fovDeg - 5.f) / (75.f - 5.f);
+    warpT = std::max(0.f, std::min(1.f, warpT));
+    float amplified = std::pow(warpT, 1.f/3.f);
+    const float BASE_NEAR = 1.2f;
+    const float FAR_EXTRA = 45.f;
+    camDist = maxDim * (BASE_NEAR + (1.f - amplified)*(1.f - amplified) * FAR_EXTRA);
+    float fovRad = fovDeg * (float)PI / 180.f;
+    focalLength = (height / 2.f) / std::tan(fovRad / 2.f);
+  } else {
+    camDist = maxDim * 5.f;
+  }
+
+  float voxelSize = scale;
+  float maxAllowedPixels = std::min(width, height) * 0.9f;
+  if (perspective && focalLength > 1e-6f && maxDim > 0.f) {
+    float rcx = std::cos(RX), rsx = std::sin(RX);
+    float rcy = std::cos(RY), rsy = std::sin(RY);
+    float rcz = std::cos(RZ), rsz = std::sin(RZ);
+    float zMinRot = 1e9f;
+    float zMaxRot = -1e9f;
+    for (int ix = 0; ix < 2; ++ix) {
+      float cxv = (ix == 0) ? minX : maxX;
+      for (int iy = 0; iy < 2; ++iy) {
+        float cyv = (iy == 0) ? minY : maxY;
+        for (int iz = 0; iz < 2; ++iz) {
+          float czv = (iz == 0) ? minZ : maxZ;
+          float X = cxv - midX;
+          float Y = cyv - midY;
+          float Z = czv - midZ;
+          { float Y2 = Y*rcx - Z*rsx; float Z2 = Y*rsx + Z*rcx; Y = Y2; Z = Z2; }
+          { float X2 = X*rcy + Z*rsy; float Z3 = -X*rsy + Z*rcy; X = X2; Z = Z3; }
+          { float X3 = X*rcz - Y*rsz; float Y3 = X*rsz + Y*rcz; X = X3; Y = Y3; }
+          float worldZ = Z + midZ;
+          if (worldZ < zMinRot) zMinRot = worldZ;
+          if (worldZ > zMaxRot) zMaxRot = worldZ;
+        }
+      }
+    }
+    float cameraZ = midZ + camDist;
+    float depthBack = std::max(0.001f, cameraZ - zMinRot);
+    float depthFront = std::max(0.001f, cameraZ - zMaxRot);
+    float depthMiddle = std::max(0.001f, camDist);
+    float depthRef = depthMiddle;
+    if (perspRef == "front" || perspRef == "Front") depthRef = depthFront;
+    else if (perspRef == "back" || perspRef == "Back") depthRef = depthBack;
+    voxelSize = scale * (depthRef / focalLength);
+    if (voxelSize * maxDim > maxAllowedPixels) voxelSize = maxAllowedPixels / maxDim;
+    if (voxelSize <= 0.f) voxelSize = 1.f;
+  } else {
+    if (voxelSize < 1.f) voxelSize = 1.f;
+    if (voxelSize * maxDim > maxAllowedPixels && maxDim > 0.f)
+      voxelSize *= (maxAllowedPixels / (voxelSize * maxDim));
+  }
+
+  float threshold = 0.01f / std::min(3.0f, voxelSize);
+
+  float gvx = 0.f, gvy = 0.f, gvz = 1.f;
+  if (perspective) {
+    gvz = camDist;
+    float gmag = std::sqrt(gvx*gvx + gvy*gvy + gvz*gvz);
+    if (gmag > 1e-6f) { gvx /= gmag; gvy /= gmag; gvz /= gmag; }
+    else { gvx = 0.f; gvy = 0.f; gvz = 1.f; }
+  }
+
+  ShaderData data;
+  data.cameraX = midX;
+  data.cameraY = midY;
+  data.cameraZ = midZ + camDist;
+  data.cameraDirX = midX - data.cameraX;
+  data.cameraDirY = midY - data.cameraY;
+  data.cameraDirZ = midZ - data.cameraZ;
+  data.middleX = midX;
+  data.middleY = midY;
+  data.middleZ = midZ;
+  data.width = width;
+  data.height = height;
+  data.voxelSize = voxelSize;
+
+  struct RenderFace { FacePoly poly; size_t faceIndex; };
+  std::vector<RenderFace> renderFaces;
+  renderFaces.reserve(voxels.size() * 6);
+
+  float screenCX = width * 0.5f;
+  float screenCY = height * 0.5f;
+  float camZ = midZ + camDist;
+
+  static const char* FACE_NAMES[6] = {"front","back","right","left","top","bottom"};
+  struct NOff { int dx, dy, dz; };
+  static const NOff neigh[6] = {
+    {0,0,1},{0,0,-1},{1,0,0},{-1,0,0},{0,1,0},{0,-1,0}
+  };
+
+  for (auto& v : voxels) {
+    float x = v.x - midX;
+    float y = v.y - midY;
+    float z = v.z - midZ;
+    { float y2 = y*cx - z*sx; float z2 = y*sx + z*cx; y = y2; z = z2; }
+    { float x2 = x*cy + z*sy; float z3 = -x*sy + z*cy; x = x2; z = (float)z3; }
+    { float x3 = x*cz - y*sz; float y3 = x*sz + y*cz; x = x3; y = y3; }
+    float worldX = x + midX;
+    float worldY = y + midY;
+    float worldZ = z + midZ;
+
+    for (int f = 0; f < 6; ++f) {
+      if (meshMode) {
+        int ix = (int)std::lround(v.x) + neigh[f].dx;
+        int iy = (int)std::lround(v.y) + neigh[f].dy;
+        int iz = (int)std::lround(v.z) + neigh[f].dz;
+        std::string key = std::to_string(ix) + "," + std::to_string(iy) + "," + std::to_string(iz);
+        if (occ.find(key) != occ.end()) continue;
+      }
+
+      float nx = LOCAL_FACE_NORMALS[f][0];
+      float ny = LOCAL_FACE_NORMALS[f][1];
+      float nz = LOCAL_FACE_NORMALS[f][2];
+      rotateNormal(nx, ny, nz, cx, sx, cy, sy, cz, sz);
+      normalizeVec(nx, ny, nz);
+      float visDot = nx*gvx + ny*gvy + nz*gvz;
+      if (visDot <= threshold) continue;
+
+      ShaderFace face;
+      face.voxelX = v.x;
+      face.voxelY = v.y;
+      face.voxelZ = v.z;
+      face.faceName = FACE_NAMES[f];
+      face.normalX = nx;
+      face.normalY = ny;
+      face.normalZ = nz;
+      face.r = v.r;
+      face.g = v.g;
+      face.b = v.b;
+      face.a = v.a;
+      size_t faceIdx = data.faces.size();
+      data.faces.push_back(face);
+
+      FacePoly poly{};
+      float avgDepth = 0.f;
+      for (int i = 0; i < 4; ++i) {
+        int vidx = FACE_IDX[f][i] - 1;
+        float lx = UNIT_VERTS[vidx][0] * voxelSize;
+        float ly = UNIT_VERTS[vidx][1] * voxelSize;
+        float lz = UNIT_VERTS[vidx][2] * voxelSize;
+        { float y2 = ly*cx - lz*sx; float z2 = ly*sx + lz*cx; ly = y2; lz = z2; }
+        { float x2 = lx*cy + lz*sy; float z3 = -lx*sy + lz*cy; lx = x2; lz = z3; }
+        { float x3 = lx*cz - ly*sz; float y3 = lx*sz + ly*cz; lx = x3; ly = y3; }
+        float wx = worldX * voxelSize + lx;
+        float wy = worldY * voxelSize + ly;
+        float wzLocal = worldZ + (lz / voxelSize);
+        if (perspective) {
+          float depth = (camZ - wzLocal);
+          if (depth < 0.001f) depth = 0.001f;
+          float s = (focalLength > 0.0f) ? (focalLength / depth) : 1.0f;
+          poly.x[i] = screenCX + (wx - midX * voxelSize) * s;
+          poly.y[i] = screenCY + (wy - midY * voxelSize) * s;
+          avgDepth += depth;
+        } else {
+          poly.x[i] = screenCX + (wx - midX * voxelSize);
+          poly.y[i] = screenCY + (wy - midY * voxelSize);
+          avgDepth += (camZ - wzLocal);
+        }
+      }
+      poly.depth = avgDepth / 4.f;
+      poly.r = v.r;
+      poly.g = v.g;
+      poly.b = v.b;
+      poly.a = v.a;
+      renderFaces.push_back({poly, faceIdx});
+    }
+  }
+
+  for (auto it = lightingEntries.rbegin(); it != lightingEntries.rend(); ++it) {
+    if (!it->enabled) continue;
+    auto found = g_lightingShaders.find(it->id);
+    if (found != g_lightingShaders.end()) found->second(data, it->params);
+  }
+  for (auto it = fxEntries.rbegin(); it != fxEntries.rend(); ++it) {
+    if (!it->enabled) continue;
+    auto found = g_fxShaders.find(it->id);
+    if (found != g_fxShaders.end()) found->second(data, it->params);
+  }
+
+  std::vector<FacePoly> polys;
+  polys.reserve(renderFaces.size());
+  for (auto& rf : renderFaces) {
+    FacePoly poly = rf.poly;
+    if (rf.faceIndex < data.faces.size()) {
+      const ShaderFace& face = data.faces[rf.faceIndex];
+      poly.r = face.r;
+      poly.g = face.g;
+      poly.b = face.b;
+      poly.a = face.a;
+    }
+    polys.push_back(poly);
+  }
+
+  std::sort(polys.begin(), polys.end(), [](const FacePoly& a, const FacePoly& b){
+    return a.depth > b.depth;
+  });
+
+  std::vector<unsigned char> buffer((size_t)width * height * 4, 0);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      size_t off = ((size_t)y * width + x) * 4;
+      buffer[off + 0] = bgR;
+      buffer[off + 1] = bgG;
+      buffer[off + 2] = bgB;
+      buffer[off + 3] = bgA;
+    }
+  }
+  for (auto& p : polys) rasterQuad(p, width, height, buffer);
+
+  lua_pushinteger(L, width); lua_setfield(L, -2, "width");
+  lua_pushinteger(L, height); lua_setfield(L, -2, "height");
+  lua_pushlstring(L, (const char*)buffer.data(), buffer.size());
+  lua_setfield(L, -2, "pixels");
+  return 1;
+}
+
+static int l_get_native_shaders(lua_State* L) {
+  lua_createtable(L, 0, 2);
+  lua_createtable(L, 0, (int)g_lightingShaders.size());
+  for (const auto& kv : g_lightingShaders) {
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, kv.first.c_str());
+  }
+  lua_setfield(L, -2, "lighting");
+
+  lua_createtable(L, 0, (int)g_fxShaders.size());
+  for (const auto& kv : g_fxShaders) {
+    lua_pushboolean(L, 1);
+    lua_setfield(L, -2, kv.first.c_str());
+  }
+  lua_setfield(L, -2, "fx");
+  return 1;
+}
 
 static const luaL_Reg FUNCS[] = {
   {"transform_voxel", l_transform_voxel},
@@ -2426,6 +2954,7 @@ static const luaL_Reg FUNCS[] = {
     return 1;
   }},
   
+  {"render_native_stack", l_render_native_stack},
   {"render_native_shaders", [](lua_State* L)->int {
     // Args: 1=shaderData table, 2=stackConfig table
     if (!lua_istable(L, 1)) return luaL_error(L, "arg1 must be shaderData table");
@@ -2545,49 +3074,6 @@ static const luaL_Reg FUNCS[] = {
     data.voxelSize = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 1;
     lua_pop(L, 1);
     
-    // Helper lambda to parse shader params
-    auto parseParams = [L](int tableIdx) -> ShaderParams {
-      ShaderParams params;
-      
-      lua_pushnil(L);
-      while (lua_next(L, tableIdx) != 0) {
-        const char* key = lua_tostring(L, -2);
-        if (!key) { lua_pop(L, 1); continue; }
-        
-        if (lua_isnumber(L, -1)) {
-          params.numbers[key] = lua_tonumber(L, -1);
-        } else if (lua_isstring(L, -1)) {
-          params.strings[key] = lua_tostring(L, -1);
-        } else if (lua_isboolean(L, -1)) {
-          params.bools[key] = lua_toboolean(L, -1);
-        } else if (lua_istable(L, -1)) {
-          // Check if it's a color (has r,g,b,a fields)
-          lua_getfield(L, -1, "r");
-          bool isColor = lua_isnumber(L, -1);
-          lua_pop(L, 1);
-          
-          if (isColor) {
-            std::array<unsigned char, 4> color = {255,255,255,255};
-            lua_getfield(L, -1, "r");
-            if (lua_isnumber(L, -1)) color[0] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "g");
-            if (lua_isnumber(L, -1)) color[1] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "b");
-            if (lua_isnumber(L, -1)) color[2] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "a");
-            if (lua_isnumber(L, -1)) color[3] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            params.colors[key] = color;
-          }
-        }
-        lua_pop(L, 1);
-      }
-      return params;
-    };
-    
     // Execute lighting shaders (bottom to top)
     lua_getfield(L, 2, "lighting");
     if (lua_istable(L, -1)) {
@@ -2607,9 +3093,9 @@ static const luaL_Reg FUNCS[] = {
             
             if (shaderId && g_lightingShaders.count(shaderId)) {
               lua_getfield(L, -1, "params");
-              ShaderParams params = parseParams(lua_gettop(L));
+              ShaderParams params = parseShaderParams(L, lua_gettop(L));
               lua_pop(L, 1);
-              
+
               g_lightingShaders[shaderId](data, params);
             }
           }
@@ -2638,9 +3124,9 @@ static const luaL_Reg FUNCS[] = {
             
             if (shaderId && g_fxShaders.count(shaderId)) {
               lua_getfield(L, -1, "params");
-              ShaderParams params = parseParams(lua_gettop(L));
+              ShaderParams params = parseShaderParams(L, lua_gettop(L));
               lua_pop(L, 1);
-              
+
               g_fxShaders[shaderId](data, params);
             }
           }
@@ -2692,6 +3178,7 @@ static const luaL_Reg FUNCS[] = {
     return 1;
   }},
   
+  {"get_native_shaders", l_get_native_shaders},
   {nullptr,nullptr}
 };
 

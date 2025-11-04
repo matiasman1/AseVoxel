@@ -16,6 +16,7 @@ local nativeConfig = {
     },
     fx = {
       faceshade = true,
+      faceshadeCamera = true,
       iso = true
     }
   },
@@ -26,12 +27,13 @@ local nativeConfig = {
       return false
     end
     if not shaderId then return false end
+    local group
     if shaderType == "lighting" then
-      return self.nativeShaders.lighting[shaderId] == true
+      group = self.nativeShaders.lighting
     elseif shaderType == "fx" then
-      return self.nativeShaders.fx[shaderId] == true
+      group = self.nativeShaders.fx
     end
-    return false
+    return group and group[shaderId] == true
   end,
   
   -- Check if entire stack can be executed natively
@@ -70,5 +72,33 @@ local nativeConfig = {
     return self.forceNative and "PAID (Native C++)" or "FREE (Lua)"
   end
 }
+
+function nativeConfig:refreshNativeShaders()
+  local info
+  if package.loaded then
+    local mod = package.loaded["asevoxel_native"]
+    if type(mod) == "table" and type(mod.get_native_shaders) == "function" then
+      local ok, res = pcall(mod.get_native_shaders)
+      if ok and type(res) == "table" then info = res end
+    end
+  end
+  if not info then
+    local okBridge, bridge = pcall(function()
+      return AseVoxel and AseVoxel.render and AseVoxel.render.native_bridge
+    end)
+    if okBridge and bridge and type(bridge.getNativeShaders) == "function" then
+      local okRes, res = pcall(bridge.getNativeShaders)
+      if okRes and type(res) == "table" then info = res end
+    end
+  end
+  if info then
+    if type(info.lighting) ~= "table" then info.lighting = {} end
+    if type(info.fx) ~= "table" then info.fx = {} end
+    self.nativeShaders = info
+  end
+  return self.nativeShaders
+end
+
+nativeConfig:refreshNativeShaders()
 
 return nativeConfig
