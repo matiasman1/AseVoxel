@@ -5,6 +5,7 @@ local nativeBridge = {
   _attempted = false,
   _loadedPath = nil,
   _forceDisabled = false,
+  _catalogCache = nil,
   _logOnce = {
     transform_ok = true,
     transform_fail = true,
@@ -15,7 +16,10 @@ local nativeBridge = {
     render_stack_ok = true,
     render_stack_fail = true,
     render_dynamic_ok = true,
-    render_dynamic_fail = true
+    render_dynamic_fail = true,
+    render_with_shaders_ok = true,
+    render_with_shaders_fail = true,
+    catalog_fail = true
   }
 }
 
@@ -74,6 +78,38 @@ end
 local function mod()
   if not nativeBridge._mod then tryRequire() end
   return nativeBridge._mod
+end
+
+local nativeConfigModule -- lazy-loaded render/native_config
+local function getNativeConfig()
+  if nativeConfigModule == nil then
+    local ok, cfg = pcall(require, "render.native_config")
+    if not ok then
+      ok, cfg = pcall(require, "native_config")
+    end
+    if ok and type(cfg) == "table" then
+      nativeConfigModule = cfg
+    else
+      nativeConfigModule = false
+    end
+  end
+  return nativeConfigModule ~= false and nativeConfigModule or nil
+end
+
+local shaderStackModule -- lazy-loaded render/shader_stack
+local function getShaderStack()
+  if shaderStackModule == nil then
+    local ok, stack = pcall(require, "render.shader_stack")
+    if not ok then
+      ok, stack = pcall(require, "shader_stack")
+    end
+    if ok and type(stack) == "table" then
+      shaderStackModule = stack
+    else
+      shaderStackModule = false
+    end
+  end
+  return shaderStackModule ~= false and shaderStackModule or nil
 end
 
 --------------------------------------------------------------------------------
@@ -172,6 +208,9 @@ end
 
 function nativeBridge.setForceDisabled(v)
   nativeBridge._forceDisabled = not not v
+  if nativeBridge._forceDisabled then
+    nativeBridge._catalogCache = nil
+  end
 end
 
 function nativeBridge.getStatus()
@@ -314,343 +353,84 @@ function nativeBridge.renderDynamic(voxels, params)
   return res
 end
 
--- New hybrid renderer: Native geometry generation + Lua shader processing + Native rasterization
--- This is the main entry point for shader-based rendering
-function nativeBridge.renderWithShaders(voxels, params)
+-- Native shader stack renderer (geometry + shader execution + rasterization)
+-- When native mode is enabled, this bypasses the Lua shader pipeline entirely
+-- and executes the configured shader stack inside the C++ module.
+function nativeBridge.renderWithShaders(voxels, params, stackConfig)
+  local nativeConfig = getNativeConfig()
+  if not (nativeConfig and nativeConfig.forceNative) then
+    return nil, "native disabled"
+  end
+
   local m = mod()
-  
-  -- Lazy load native config
-  local nativeConfig
-  local ok, result = pcall(function()
-    return require("render.native_config")
-  end)
-  if ok then
-    nativeConfig = result
-  else
-    -- Try alternative path
-    ok, result = pcall(function()
-      return require("native_config")
-    end)
-    if ok then
-      nativeConfig = result
+  if not (m and m.render_with_shaders) then
+    if not nativeBridge._logOnce.render_with_shaders_fail then
+      nativeBridge._logOnce.render_with_shaders_fail = true
+      print("[asevoxel-native] render_with_shaders not available (falling back)")
     end
+    return nil, "native missing"
   end
-  
-  -- Lazy load shader_stack module
-  local shaderStack
-  ok, result = pcall(function()
-    return require("render.shader_stack")
-  end)
-  if ok then
-    shaderStack = result
-  else
-    -- Try alternative path
-    ok, result = pcall(function()
-      return require("shader_stack")
-    end)
-    if ok then
-      shaderStack = result
+
+  local cfg = stackConfig
+  if cfg == nil then
+    if params and type(params.shaderStack) == "table" then
+      cfg = params.shaderStack
     else
-      return nil, "shader_stack module not available: " .. tostring(result)
-    end
-  end
-  
-  -- Load shaders if not already loaded
-  if shaderStack and not shaderStack._loaded then
-    shaderStack.loadShaders()
-    shaderStack._loaded = true
-  end
-  
-  -- Step 1: Generate face geometry with normals (native)
-  if not (m and m.precompute_visible_faces and m.precompute_rotated_normals) then
-    return nil, "native precompute functions not available"
-  end
-  
-  -- Calculate model bounds and middle point
-  local minX, maxX = voxels[1].x, voxels[1].x
-  local minY, maxY = voxels[1].y, voxels[1].y
-  local minZ, maxZ = voxels[1].z, voxels[1].z
-  
-  for _, v in ipairs(voxels) do
-    if v.x < minX then minX = v.x end
-    if v.x > maxX then maxX = v.x end
-    if v.y < minY then minY = v.y end
-    if v.y > maxY then maxY = v.y end
-    if v.z < minZ then minZ = v.z end
-    if v.z > maxZ then maxZ = v.z end
-  end
-  
-  local midX = (minX + maxX) / 2
-  local midY = (minY + maxY) / 2
-  local midZ = (minZ + maxZ) / 2
-  
-  -- Build face data structure for shader processing
-  local shaderData = {
-    faces = {},
-    voxels = voxels,
-    camera = {
-      position = {x=midX, y=midY, z=midZ + 100},
-      direction = {x=0, y=0, z=-1}
-    },
-    middlePoint = {x=midX, y=midY, z=midZ},
-    modelBounds = {minX=minX, maxX=maxX, minY=minY, maxY=maxY, minZ=minZ, maxZ=maxZ},
-    width = params.width or 200,
-    height = params.height or 200,
-    voxelSize = params.voxelSize or params.scale or 10
-  }
-  
-  -- Step 2: Precompute visible faces and rotated normals (native optimization)
-  local visResult = m.precompute_visible_faces(
-    params.xRotation or 0, 
-    params.yRotation or 0, 
-    params.zRotation or 0, 
-    params.orthogonal or false
-  )
-  
-  local normalResult = m.precompute_rotated_normals(
-    params.xRotation or 0, 
-    params.yRotation or 0, 
-    params.zRotation or 0
-  )
-  
-  if not visResult or not normalResult then
-    return nil, "precompute failed"
-  end
-  
-  -- Step 3: Build face list from voxels (only visible faces)
-  local faceNames = {"front", "back", "right", "left", "top", "bottom"}
-  for i, voxel in ipairs(voxels) do
-    for _, faceName in ipairs(faceNames) do
-      -- Check visibility
-      if visResult.visibleFaces[faceName] then
-        local normal = normalResult[faceName]
-        if normal then
-          table.insert(shaderData.faces, {
-            voxel = {x = voxel.x, y = voxel.y, z = voxel.z},
-            face = faceName,
-            normal = {x = normal.x, y = normal.y, z = normal.z},
-            color = {
-              r = voxel.color and voxel.color.r or 255,
-              g = voxel.color and voxel.color.g or 255,
-              b = voxel.color and voxel.color.b or 255,
-              a = voxel.color and voxel.color.a or 255
-            }
-          })
-        end
+      local shaderStack = getShaderStack()
+      if shaderStack and shaderStack.prepareStackConfig then
+        cfg = shaderStack.prepareStackConfig(params or {})
       end
     end
   end
-  
-  -- Step 4: Prepare shader stack configuration
-  local stackConfig = shaderStack.prepareStackConfig(params)
-  
-  -- Step 5: Process shaders (Hybrid: Native C++ with Lua fallback)
-  -- PERFORMANCE OPTIMIZATION: For fully native shader stacks, bypass Lua overhead
-  -- and use the old fast path (render_stack/render_basic) which does everything in C++
-  local useNative = false
-  local useFastPath = false
-  
-  if nativeConfig and m then
-    useNative = nativeConfig:canUseNativeStack(stackConfig)
-    
-    -- Check if we can use the ultra-fast old render path (render_stack/render_basic)
-    -- This avoids all Lua table operations and does geometry+shading+rasterization in one C++ call
-    if useNative and (m.render_stack or m.render_basic) then
-      -- Check if shader stack matches what render_stack/render_basic can handle
-      local canUseFastPath = false
-      
-      -- render_basic: handles basic lighting only
-      if m.render_basic and stackConfig.lighting and #stackConfig.lighting == 1 and not stackConfig.fx then
-        local shader = stackConfig.lighting[1]
-        if shader.enabled and shader.id == "basic" then
-          canUseFastPath = true
-          useFastPath = "basic"
-        end
-      end
-      
-      -- render_stack: handles dynamic lighting + faceshade/iso FX
-      if not canUseFastPath and m.render_stack then
-        local hasValidLighting = false
-        local hasValidFX = false
-        
-        if stackConfig.lighting and #stackConfig.lighting == 1 then
-          local shader = stackConfig.lighting[1]
-          if shader.enabled and shader.id == "dynamic" then
-            hasValidLighting = true
-          end
-        end
-        
-        if stackConfig.fx and #stackConfig.fx == 1 then
-          local shader = stackConfig.fx[1]
-          if shader.enabled and (shader.id == "faceshade" or shader.id == "iso") then
-            hasValidFX = true
-          end
-        end
-        
-        if hasValidLighting and hasValidFX then
-          canUseFastPath = true
-          useFastPath = "stack"
-        end
-      end
-    end
+
+  if type(cfg) ~= "table" then
+    cfg = { lighting = {}, fx = {} }
   end
-  
-  -- FAST PATH: Use old optimized render functions (40ms performance)
-  if useFastPath then
-    if not nativeBridge._logOnce.fast_path then
-      nativeBridge._logOnce.fast_path = true
-      print("[asevoxel-native] Using optimized fast path (" .. useFastPath .. ") - bypassing Lua overhead")
+  if type(cfg.lighting) ~= "table" then cfg.lighting = {} end
+  if type(cfg.fx) ~= "table" then cfg.fx = {} end
+
+  local ok, result = pcall(m.render_with_shaders, voxels, params or {}, cfg)
+  if not ok or type(result) ~= "table" or type(result.pixels) ~= "string" then
+    if not nativeBridge._logOnce.render_with_shaders_fail then
+      nativeBridge._logOnce.render_with_shaders_fail = true
+      print("[asevoxel-native] render_with_shaders FAILED, falling back: " .. tostring(result))
     end
-    
-    -- Call the old fast renderer directly - skip all the Lua table manipulation
-    -- This is what gave us 40ms performance in the old version
-    local renderFunc = (useFastPath == "basic") and m.render_basic or m.render_stack
-    local ok, result = pcall(renderFunc, voxels, params)
-    
-    if ok and result and result.pixels then
-      -- Success - return immediately, skipping all the slow Lua processing below
-      return result
-    else
-      -- Fast path failed, fall through to slow path
-      if not nativeBridge._logOnce.fast_path_fail then
-        nativeBridge._logOnce.fast_path_fail = true
-        print("[asevoxel-native] Fast path failed: " .. tostring(result) .. ", using slow path")
-      end
-    end
+    return nil, result
   end
-  
-  -- SLOW PATH: Full flexibility but with Lua overhead (110ms performance)  
-  if useNative and m.render_native_shaders then
-    -- Convert shaderData to native format
-    local nativeData = {
-      faces = {},
-      cameraX = shaderData.camera.position.x,
-      cameraY = shaderData.camera.position.y,
-      cameraZ = shaderData.camera.position.z,
-      cameraDirX = shaderData.camera.direction.x,
-      cameraDirY = shaderData.camera.direction.y,
-      cameraDirZ = shaderData.camera.direction.z,
-      middleX = shaderData.middlePoint.x,
-      middleY = shaderData.middlePoint.y,
-      middleZ = shaderData.middlePoint.z,
-      width = shaderData.width,
-      height = shaderData.height,
-      voxelSize = shaderData.voxelSize
-    }
-    
-    for _, face in ipairs(shaderData.faces) do
-      table.insert(nativeData.faces, {
-        voxelX = face.voxel.x,
-        voxelY = face.voxel.y,
-        voxelZ = face.voxel.z,
-        faceName = face.face,
-        normalX = face.normal.x,
-        normalY = face.normal.y,
-        normalZ = face.normal.z,
-        r = face.color.r,
-        g = face.color.g,
-        b = face.color.b,
-        a = face.color.a
-      })
-    end
-    
-    -- Execute native shaders
-    local ok, result = pcall(m.render_native_shaders, nativeData, stackConfig)
-    if ok and result and result.faces then
-      -- Convert back to shaderData format
-      shaderData.faces = {}
-      for _, face in ipairs(result.faces) do
-        table.insert(shaderData.faces, {
-          voxel = {x = face.voxelX, y = face.voxelY, z = face.voxelZ},
-          face = face.faceName,
-          normal = {x = face.normalX, y = face.normalY, z = face.normalZ},
-          color = {r = face.r, g = face.g, b = face.b, a = face.a}
-        })
-      end
-      
-      if not nativeBridge._logOnce.native_shaders_slow then
-        nativeBridge._logOnce.native_shaders_slow = true
-        print("[asevoxel-native] Using native C++ shaders (slow path with Lua overhead)")
-      end
-    else
-      -- Fall back to Lua if native fails
-      if not nativeBridge._logOnce.native_shader_fallback then
-        nativeBridge._logOnce.native_shader_fallback = true
-        print("[asevoxel-native] Native shaders failed, using Lua: " .. tostring(result))
-      end
-      shaderData = shaderStack.execute(shaderData, stackConfig)
-    end
-  else
-    -- Use Lua shaders (for custom shaders or free version)
-    if not nativeBridge._logOnce.lua_shaders then
-      nativeBridge._logOnce.lua_shaders = true
-      print("[asevoxel-native] Using Lua shaders (custom or unsupported shaders detected)")
-    end
-    shaderData = shaderStack.execute(shaderData, stackConfig)
+
+  if not nativeBridge._logOnce.render_with_shaders_ok then
+    nativeBridge._logOnce.render_with_shaders_ok = true
+    print("[asevoxel-native] render_with_shaders (native)")
   end
-  
-  -- Step 6: Build voxel list with averaged face colors for rasterization
-  -- Group faces by voxel position and average their colors
-  local voxelColorMap = {}
-  
-  for _, face in ipairs(shaderData.faces or {}) do
-    if face.voxel and face.color then
-      local key = string.format("%d_%d_%d", face.voxel.x, face.voxel.y, face.voxel.z)
-      if not voxelColorMap[key] then
-        voxelColorMap[key] = {
-          x = face.voxel.x,
-          y = face.voxel.y,
-          z = face.voxel.z,
-          r = 0, g = 0, b = 0, a = 0,
-          count = 0
-        }
-      end
-      local vc = voxelColorMap[key]
-      vc.r = vc.r + (face.color.r or 255)
-      vc.g = vc.g + (face.color.g or 255)
-      vc.b = vc.b + (face.color.b or 255)
-      vc.a = vc.a + (face.color.a or 255)
-      vc.count = vc.count + 1
+
+  return result
+end
+
+function nativeBridge.getNativeShaderCatalog(forceRefresh)
+  if not forceRefresh and nativeBridge._catalogCache then
+    return nativeBridge._catalogCache
+  end
+
+  local m = mod()
+  if not (m and m.get_native_shader_catalog) then
+    if not nativeBridge._logOnce.catalog_fail then
+      nativeBridge._logOnce.catalog_fail = true
+      print("[asevoxel-native] get_native_shader_catalog not available")
     end
+    return nil, "native missing"
   end
-  
-  -- Convert to voxel list with averaged colors
-  local litVoxels = {}
-  for key, vc in pairs(voxelColorMap) do
-    table.insert(litVoxels, {
-      x = vc.x,
-      y = vc.y,
-      z = vc.z,
-      color = {
-        r = math.floor(vc.r / vc.count + 0.5),
-        g = math.floor(vc.g / vc.count + 0.5),
-        b = math.floor(vc.b / vc.count + 0.5),
-        a = math.floor(vc.a / vc.count + 0.5)
-      }
-    })
+
+  local ok, catalog = pcall(m.get_native_shader_catalog)
+  if not ok or type(catalog) ~= "table" then
+    if not nativeBridge._logOnce.catalog_fail then
+      nativeBridge._logOnce.catalog_fail = true
+      print("[asevoxel-native] get_native_shader_catalog FAILED: " .. tostring(catalog))
+    end
+    return nil, catalog
   end
-  
-  -- Step 7: Rasterize using render_basic with pre-lit colors (native)
-  if m.render_basic then
-    local rasterParams = {
-      width = params.width or 200,
-      height = params.height or 200,
-      scale = params.voxelSize or params.scale or 10,
-      xRotation = params.xRotation or 0,
-      yRotation = params.yRotation or 0,
-      zRotation = params.zRotation or 0,
-      orthogonal = params.orthogonal or false,
-      fovDegrees = params.fovDegrees or 0,
-      perspectiveScaleRef = params.perspectiveScaleRef or "middle",
-      backgroundColor = params.backgroundColor or {r=0, g=0, b=0, a=0},
-      basicShadeIntensity = 100,  -- Full brightness (already lit by shaders)
-      basicLightIntensity = 100
-    }
-    
-    return m.render_basic(litVoxels, rasterParams)
-  end
-  
-  return nil, "native render_basic not available"
+
+  nativeBridge._catalogCache = catalog
+  return catalog
 end
 
 --------------------------------------------------------------------------------
@@ -666,6 +446,7 @@ function nativeBridge.unloadAll()
   nativeBridge._mod = nil
   nativeBridge._loadedPath = nil
   nativeBridge._attempted = false
+  nativeBridge._catalogCache = nil
   package.loaded["asevoxel_native"] = nil
   package.loaded["lua54"] = nil
   package.loaded["ffi"] = nil
@@ -725,7 +506,8 @@ end
 
 -- Alias for compatibility with preview_renderer.lua
 function nativeBridge.renderShaderStack(voxels, params)
-  return nativeBridge.renderWithShaders(voxels, params)
+  local stackConfig = params and params.shaderStack
+  return nativeBridge.renderWithShaders(voxels, params, stackConfig)
 end
 
 -- Auto-attempt native load on require (if not already loaded / forced off)

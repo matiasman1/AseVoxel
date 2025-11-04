@@ -34,6 +34,16 @@ local function getShaderUI()
   return AseVoxel.render.shader_ui
 end
 
+local function getNativeConfig()
+  local cfg = AseVoxel and AseVoxel.render and AseVoxel.render.native_config
+  if cfg then return cfg end
+  local ok, mod = pcall(require, "render.native_config")
+  if ok then return mod end
+  ok, mod = pcall(require, "native_config")
+  if ok then return mod end
+  return nil
+end
+
 local function getMathUtils()
   return AseVoxel.mathUtils
 end
@@ -902,27 +912,36 @@ function mainDialog.create(viewParams, schedulePreview, rotateModel, updateLayer
     text = "+ Add Lighting Shader",
     onclick = function()
       local shaderStack = getShaderStack()
-      if not shaderStack then 
+      if not shaderStack then
         app.alert("Shader stack not loaded!")
-        return 
-      end
-      
-      -- Get available lighting shaders
-      local availableShaders = shaderStack.listShaders("lighting")
-      if not availableShaders or #availableShaders == 0 then
-        app.alert("No lighting shaders available!")
         return
       end
-      
+
+      -- Get available lighting shaders
+      local availableShaders = shaderStack.listShaders("lighting")
+      local nativeConfig = getNativeConfig()
+      if not availableShaders or #availableShaders == 0 then
+        if nativeConfig and nativeConfig.forceNative then
+          app.alert("Native mode is enabled but no native lighting shaders are available.")
+        else
+          app.alert("No lighting shaders available!")
+        end
+        return
+      end
+
       -- Build options list
       local options = {}
       for _, shaderInfo in ipairs(availableShaders) do
         local shaderName = (shaderInfo.info and shaderInfo.info.name) or shaderInfo.id or "Unknown"
         table.insert(options, shaderName .. " (" .. shaderInfo.id .. ")")
       end
-      
+
       -- Show selection dialog
       local selDlg = Dialog("Add Lighting Shader")
+      if nativeConfig and nativeConfig.forceNative then
+        selDlg:label{ text = "Native mode enabled: only native-compatible shaders are listed." }
+        selDlg:newrow()
+      end
       selDlg:combobox{
         id = "shaderChoice",
         label = "Shader:",
@@ -1113,27 +1132,36 @@ function mainDialog.create(viewParams, schedulePreview, rotateModel, updateLayer
     text = "+ Add FX Shader",
     onclick = function()
       local shaderStack = getShaderStack()
-      if not shaderStack then 
+      if not shaderStack then
         app.alert("Shader stack not loaded!")
-        return 
-      end
-      
-      -- Get available FX shaders
-      local availableShaders = shaderStack.listShaders("fx")
-      if not availableShaders or #availableShaders == 0 then
-        app.alert("No FX shaders available!")
         return
       end
-      
+
+      -- Get available FX shaders
+      local availableShaders = shaderStack.listShaders("fx")
+      local nativeConfig = getNativeConfig()
+      if not availableShaders or #availableShaders == 0 then
+        if nativeConfig and nativeConfig.forceNative then
+          app.alert("Native mode is enabled but no native FX shaders are available.")
+        else
+          app.alert("No FX shaders available!")
+        end
+        return
+      end
+
       -- Build options list
       local options = {}
       for _, shaderInfo in ipairs(availableShaders) do
         local shaderName = (shaderInfo.info and shaderInfo.info.name) or shaderInfo.id or "Unknown"
         table.insert(options, shaderName .. " (" .. shaderInfo.id .. ")")
       end
-      
+
       -- Show selection dialog
       local selDlg = Dialog("Add FX Shader")
+      if nativeConfig and nativeConfig.forceNative then
+        selDlg:label{ text = "Native mode enabled: only native-compatible shaders are listed." }
+        selDlg:newrow()
+      end
       selDlg:combobox{
         id = "shaderChoice",
         label = "Shader:",

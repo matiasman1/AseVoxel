@@ -1,12 +1,114 @@
 -- Executes shader pipeline (lighting → FX) with input routing
 
+local nativeBridge
+pcall(function() nativeBridge = require("render.native_bridge") end)
+if not nativeBridge then
+  pcall(function() nativeBridge = require("native_bridge") end)
+end
+
+local nativeConfig
+pcall(function() nativeConfig = require("render.native_config") end)
+if not nativeConfig then
+  pcall(function() nativeConfig = require("native_config") end)
+end
+
 local shaderStack = {}
+
+shaderStack._nativeCatalog = nil
+shaderStack._nativeSupport = { lighting = {}, fx = {} }
 
 -- Shader registry (auto-populated on load)
 shaderStack.registry = {
   lighting = {},  -- { shader_id = shaderModule, ... }
   fx = {}
 }
+
+local function mergeNativeCatalog()
+  if not (nativeBridge and nativeBridge.getNativeShaderCatalog) then
+    shaderStack._nativeCatalog = nil
+    shaderStack._nativeSupport = { lighting = {}, fx = {} }
+    return
+  end
+
+  local catalog = nativeBridge.getNativeShaderCatalog()
+  if type(catalog) ~= "table" then
+    shaderStack._nativeCatalog = nil
+    shaderStack._nativeSupport = { lighting = {}, fx = {} }
+    return
+  end
+
+  shaderStack._nativeCatalog = catalog
+  shaderStack._nativeSupport = { lighting = {}, fx = {} }
+
+  for _, category in ipairs({"lighting", "fx"}) do
+    local list = catalog[category]
+    if type(list) == "table" then
+      for _, entry in ipairs(list) do
+        local supportsNative = entry.supportsNative ~= false
+        shaderStack._nativeSupport[category][entry.id] = supportsNative
+
+        local registry = shaderStack.registry[category]
+        local module = registry[entry.id]
+        if not module then
+          module = {
+            info = {
+              id = entry.id,
+              name = entry.name or entry.id,
+              category = category,
+              description = entry.description,
+              supportsNative = supportsNative
+            },
+            paramSchema = entry.paramSchema
+          }
+          registry[entry.id] = module
+        else
+          module.info = module.info or { id = entry.id, name = entry.name or entry.id, category = category }
+          module.info.supportsNative = supportsNative
+          if entry.name and (not module.info.name or module.info.name == "") then
+            module.info.name = entry.name
+          end
+          if entry.description and (not module.info.description or module.info.description == "") then
+            module.info.description = entry.description
+          end
+          if entry.paramSchema and not module.paramSchema then
+            module.paramSchema = entry.paramSchema
+          end
+        end
+      end
+    end
+  end
+end
+
+function shaderStack.refreshNativeCatalog()
+  mergeNativeCatalog()
+  return shaderStack._nativeCatalog
+end
+
+function shaderStack.getNativeCatalog()
+  if not shaderStack._nativeCatalog then
+    mergeNativeCatalog()
+  end
+  return shaderStack._nativeCatalog
+end
+
+local function shaderSupportsNative(category, id, shader)
+  if shader and shader.info and shader.info.supportsNative ~= nil then
+    return shader.info.supportsNative
+  end
+
+  if shaderStack._nativeSupport and shaderStack._nativeSupport[category] then
+    local cached = shaderStack._nativeSupport[category][id]
+    if cached ~= nil then
+      return cached
+    end
+  end
+
+  if nativeConfig and nativeConfig.hasNativeSupport then
+    return nativeConfig:hasNativeSupport(category, id)
+  end
+
+  return false
+end
 
 -- Validate shader module structure
 function shaderStack.validateShaderModule(shaderModule, shaderId)
@@ -125,8 +227,10 @@ function shaderStack.loadShaders()
   for _ in pairs(shaderStack.registry.lighting) do lightingCount = lightingCount + 1 end
   local fxCount = 0
   for _ in pairs(shaderStack.registry.fx) do fxCount = fxCount + 1 end
-  
+
   print("[AseVoxel] Loaded " .. lightingCount .. " lighting, " .. fxCount .. " fx shaders")
+
+  mergeNativeCatalog()
 end
 
 -- Safety limits for shader execution
@@ -293,19 +397,31 @@ end
 
 -- List all available shaders
 function shaderStack.listShaders(category)
+  local nativeMode = nativeConfig and nativeConfig.forceNative
+
   if category then
     local list = {}
     for id, shader in pairs(shaderStack.registry[category]) do
-      table.insert(list, {id = id, info = shader.info})
+      local info = shader.info or { id = id, name = id, category = category }
+      shader.info = info
+      local supportsNative = shaderSupportsNative(category, id, shader)
+      info.supportsNative = supportsNative
+      if not nativeMode or supportsNative then
+        table.insert(list, { id = id, info = info })
+      end
     end
+    table.sort(list, function(a, b)
+      local an = (a.info and a.info.name) or a.id
+      local bn = (b.info and b.info.name) or b.id
+      return tostring(an) < tostring(bn)
+    end)
     return list
-  else
-    -- Return all shaders
-    return {
-      lighting = shaderStack.listShaders("lighting"),
-      fx = shaderStack.listShaders("fx")
-    }
   end
+
+  return {
+    lighting = shaderStack.listShaders("lighting"),
+    fx = shaderStack.listShaders("fx")
+  }
 end
 
 -- Convert shader stack config from params format to execution format

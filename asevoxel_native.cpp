@@ -699,6 +699,7 @@ struct ShaderFace {
   std::string faceName;
   float normalX, normalY, normalZ;
   unsigned char r, g, b, a;
+  unsigned char baseR, baseG, baseB, baseA;
 };
 
 struct ShaderData {
@@ -721,6 +722,59 @@ struct ShaderParams {
 static inline void normalizeVec(float& x, float& y, float& z) {
   float len = std::sqrt(x*x + y*y + z*z);
   if (len > 1e-6f) { x /= len; y /= len; z /= len; }
+}
+
+static ShaderParams parseShaderParams(lua_State* L, int tableIdx) {
+  ShaderParams params;
+  if (!lua_istable(L, tableIdx)) {
+    return params;
+  }
+  int absIdx = lua_absindex(L, tableIdx);
+  lua_pushnil(L);
+  while (lua_next(L, absIdx) != 0) {
+    const char* key = lua_tostring(L, -2);
+    if (!key) {
+      lua_pop(L, 1);
+      continue;
+    }
+    if (lua_isnumber(L, -1)) {
+      params.numbers[key] = lua_tonumber(L, -1);
+    } else if (lua_isstring(L, -1)) {
+      params.strings[key] = lua_tostring(L, -1);
+    } else if (lua_isboolean(L, -1)) {
+      params.bools[key] = lua_toboolean(L, -1) != 0;
+    } else if (lua_istable(L, -1)) {
+      lua_getfield(L, -1, "r");
+      bool isColor = lua_isnumber(L, -1);
+      lua_pop(L, 1);
+      if (isColor) {
+        std::array<unsigned char, 4> color = {255, 255, 255, 255};
+        lua_getfield(L, -1, "r");
+        if (lua_isnumber(L, -1)) color[0] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "g");
+        if (lua_isnumber(L, -1)) color[1] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "b");
+        if (lua_isnumber(L, -1)) color[2] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        lua_getfield(L, -1, "a");
+        if (lua_isnumber(L, -1)) color[3] = (unsigned char)lua_tointeger(L, -1);
+        lua_pop(L, 1);
+        params.colors[key] = color;
+      }
+    }
+    lua_pop(L, 1);
+  }
+  return params;
+}
+
+static void pushColorTable(lua_State* L, unsigned char r, unsigned char g, unsigned char b, unsigned char a = 255) {
+  lua_createtable(L, 0, 4);
+  lua_pushinteger(L, r); lua_setfield(L, -2, "r");
+  lua_pushinteger(L, g); lua_setfield(L, -2, "g");
+  lua_pushinteger(L, b); lua_setfield(L, -2, "b");
+  lua_pushinteger(L, a); lua_setfield(L, -2, "a");
 }
 
 // Helper: dot product
@@ -1177,6 +1231,255 @@ static int l_precompute_unit_cube_vertices(lua_State* L) {
 
 // ======================== END OPTIMIZED VISIBILITY SYSTEM ========================
 
+static int l_get_native_shader_catalog(lua_State* L) {
+  lua_createtable(L, 0, 2);
+  int resultIdx = lua_gettop(L);
+
+  lua_createtable(L, 2, 0);
+  int lightingIdx = lua_gettop(L);
+  int lightingAbs = lua_absindex(L, lightingIdx);
+
+  lua_createtable(L, 0, 6);
+  lua_pushstring(L, "basic"); lua_setfield(L, -2, "id");
+  lua_pushstring(L, "Basic Light"); lua_setfield(L, -2, "name");
+  lua_pushstring(L, "lighting"); lua_setfield(L, -2, "category");
+  lua_pushstring(L, "Simple camera-facing lighting"); lua_setfield(L, -2, "description");
+  lua_pushboolean(L, 1); lua_setfield(L, -2, "supportsNative");
+  lua_createtable(L, 2, 0);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, "lightIntensity"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "slider"); lua_setfield(L, -2, "type");
+    lua_pushnumber(L, 0); lua_setfield(L, -2, "min");
+    lua_pushnumber(L, 100); lua_setfield(L, -2, "max");
+    lua_pushnumber(L, 50); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Light Intensity"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Brightness for faces toward camera"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 1);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, "shadeIntensity"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "slider"); lua_setfield(L, -2, "type");
+    lua_pushnumber(L, 0); lua_setfield(L, -2, "min");
+    lua_pushnumber(L, 100); lua_setfield(L, -2, "max");
+    lua_pushnumber(L, 50); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Shade Intensity"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Brightness for faces away from camera"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 2);
+  lua_setfield(L, -2, "paramSchema");
+  lua_rawseti(L, lightingAbs, 1);
+
+  lua_createtable(L, 0, 6);
+  lua_pushstring(L, "dynamic"); lua_setfield(L, -2, "id");
+  lua_pushstring(L, "Dynamic Lighting"); lua_setfield(L, -2, "name");
+  lua_pushstring(L, "lighting"); lua_setfield(L, -2, "category");
+  lua_pushstring(L, "Directional lighting with diffuse, ambient, rim"); lua_setfield(L, -2, "description");
+  lua_pushboolean(L, 1); lua_setfield(L, -2, "supportsNative");
+  lua_createtable(L, 7, 0);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, "pitch"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "slider"); lua_setfield(L, -2, "type");
+    lua_pushnumber(L, -90); lua_setfield(L, -2, "min");
+    lua_pushnumber(L, 90); lua_setfield(L, -2, "max");
+    lua_pushnumber(L, 25); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Pitch"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Vertical angle of light direction"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 1);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, "yaw"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "slider"); lua_setfield(L, -2, "type");
+    lua_pushnumber(L, 0); lua_setfield(L, -2, "min");
+    lua_pushnumber(L, 360); lua_setfield(L, -2, "max");
+    lua_pushnumber(L, 25); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Yaw"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Horizontal angle of light direction"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 2);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, "diffuse"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "slider"); lua_setfield(L, -2, "type");
+    lua_pushnumber(L, 0); lua_setfield(L, -2, "min");
+    lua_pushnumber(L, 100); lua_setfield(L, -2, "max");
+    lua_pushnumber(L, 60); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Diffuse"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Diffuse lighting intensity"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 3);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, "ambient"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "slider"); lua_setfield(L, -2, "type");
+    lua_pushnumber(L, 0); lua_setfield(L, -2, "min");
+    lua_pushnumber(L, 100); lua_setfield(L, -2, "max");
+    lua_pushnumber(L, 30); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Ambient"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Ambient lighting intensity"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 4);
+    lua_createtable(L, 0, 7);
+    lua_pushstring(L, "diameter"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "slider"); lua_setfield(L, -2, "type");
+    lua_pushnumber(L, 0); lua_setfield(L, -2, "min");
+    lua_pushnumber(L, 200); lua_setfield(L, -2, "max");
+    lua_pushnumber(L, 100); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Diameter"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Light cone diameter (0 = no radial falloff)"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 5);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "rimEnabled"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "bool"); lua_setfield(L, -2, "type");
+    lua_pushboolean(L, 0); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Rim Lighting"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Enable rim/silhouette lighting"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 6);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "lightColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Light Color"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color of the light"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 7);
+  lua_setfield(L, -2, "paramSchema");
+  lua_rawseti(L, lightingAbs, 2);
+
+  lua_setfield(L, resultIdx, "lighting");
+
+  lua_createtable(L, 2, 0);
+  int fxIdx = lua_gettop(L);
+  int fxAbs = lua_absindex(L, fxIdx);
+
+  lua_createtable(L, 0, 6);
+  lua_pushstring(L, "faceshade"); lua_setfield(L, -2, "id");
+  lua_pushstring(L, "FaceShade"); lua_setfield(L, -2, "name");
+  lua_pushstring(L, "fx"); lua_setfield(L, -2, "category");
+  lua_pushstring(L, "Directional face shading with alpha/literal modes"); lua_setfield(L, -2, "description");
+  lua_pushboolean(L, 1); lua_setfield(L, -2, "supportsNative");
+  lua_createtable(L, 9, 0);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "shadingMode"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "choice"); lua_setfield(L, -2, "type");
+    lua_createtable(L, 2, 0);
+      lua_pushstring(L, "alpha"); lua_rawseti(L, -2, 1);
+      lua_pushstring(L, "literal"); lua_rawseti(L, -2, 2);
+    lua_setfield(L, -2, "options");
+    lua_pushstring(L, "alpha"); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Mode"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Alpha = brightness multiplier, Literal = replace color"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 1);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "materialMode"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "bool"); lua_setfield(L, -2, "type");
+    lua_pushboolean(L, 0); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Material Mode"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Skip pure colors"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 2);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "enableTint"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "bool"); lua_setfield(L, -2, "type");
+    lua_pushboolean(L, 0); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Enable Tint"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Apply color tint in Alpha mode"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 3);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "topColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Top"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for top-facing faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 4);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "bottomColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Bottom"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for bottom-facing faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 5);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "frontColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Front"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for front-facing faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 6);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "backColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Back"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for back-facing faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 7);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "leftColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Left"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for left-facing faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 8);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "rightColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Right"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for right-facing faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 9);
+  lua_setfield(L, -2, "paramSchema");
+  lua_rawseti(L, fxAbs, 1);
+
+  lua_createtable(L, 0, 6);
+  lua_pushstring(L, "iso"); lua_setfield(L, -2, "id");
+  lua_pushstring(L, "Isometric Shade"); lua_setfield(L, -2, "name");
+  lua_pushstring(L, "fx"); lua_setfield(L, -2, "category");
+  lua_pushstring(L, "Isometric style shading"); lua_setfield(L, -2, "description");
+  lua_pushboolean(L, 1); lua_setfield(L, -2, "supportsNative");
+  lua_createtable(L, 6, 0);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "shadingMode"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "choice"); lua_setfield(L, -2, "type");
+    lua_createtable(L, 2, 0);
+      lua_pushstring(L, "alpha"); lua_rawseti(L, -2, 1);
+      lua_pushstring(L, "literal"); lua_rawseti(L, -2, 2);
+    lua_setfield(L, -2, "options");
+    lua_pushstring(L, "alpha"); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Mode"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Alpha = brightness multiplier, Literal = replace color"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 1);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "materialMode"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "bool"); lua_setfield(L, -2, "type");
+    lua_pushboolean(L, 0); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Material Mode"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Skip pure colors"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 2);
+    lua_createtable(L, 0, 5);
+    lua_pushstring(L, "enableTint"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "bool"); lua_setfield(L, -2, "type");
+    lua_pushboolean(L, 0); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Enable Tint"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Apply color tint in Alpha mode"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 3);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "topColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 255, 255, 255, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Top"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for top/bottom faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 4);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "leftColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 235, 235, 235, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Left"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for left isometric faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 5);
+    lua_createtable(L, 0, 4);
+    lua_pushstring(L, "rightColor"); lua_setfield(L, -2, "name");
+    lua_pushstring(L, "color"); lua_setfield(L, -2, "type");
+    pushColorTable(L, 210, 210, 210, 255); lua_setfield(L, -2, "default");
+    lua_pushstring(L, "Right"); lua_setfield(L, -2, "label");
+    lua_pushstring(L, "Color for right isometric faces"); lua_setfield(L, -2, "tooltip");
+    lua_rawseti(L, -2, 6);
+  lua_setfield(L, -2, "paramSchema");
+  lua_rawseti(L, fxAbs, 2);
+
+  lua_setfield(L, resultIdx, "fx");
+
+  return 1;
+}
+
 } // anonymous namespace
 
 static const luaL_Reg FUNCS[] = {
@@ -1187,6 +1490,7 @@ static const luaL_Reg FUNCS[] = {
   {"precompute_visible_faces", l_precompute_visible_faces},
   {"precompute_rotated_normals", l_precompute_rotated_normals},
   {"precompute_unit_cube_vertices", l_precompute_unit_cube_vertices},
+  {"get_native_shader_catalog", l_get_native_shader_catalog},
   // Phase 4: stack shading renderer (updated implementation)
   {"render_stack", [](lua_State* L)->int {
       if(!lua_istable(L,1)||!lua_istable(L,2)){
@@ -2000,429 +2304,446 @@ static const luaL_Reg FUNCS[] = {
   }},
   
   // --------------------------- SHADER STACK RENDERER (NEW) -----------------------
-  // render_with_shaders(voxelModel, params, shaderStack)
-  // Executes Lua shader pipeline from C++ for maximum performance
   {"render_with_shaders", [](lua_State* L) -> int {
-    // Validate arguments
-    if (!lua_istable(L, 1)) {
+    if (!lua_istable(L, 1) || !lua_istable(L, 2)) {
       lua_pushnil(L);
-      lua_pushstring(L, "arg 1 (voxelModel) must be table");
+      lua_pushstring(L, "expected (voxels, params)");
       return 2;
     }
-    if (!lua_istable(L, 2)) {
-      lua_pushnil(L);
-      lua_pushstring(L, "arg 2 (params) must be table");
-      return 2;
+
+    bool createdStackTable = false;
+    int stackIdx;
+    if (lua_gettop(L) >= 3 && lua_istable(L, 3)) {
+      stackIdx = 3;
+    } else {
+      lua_newtable(L);
+      stackIdx = lua_gettop(L);
+      createdStackTable = true;
     }
-    if (!lua_istable(L, 3)) {
-      lua_pushnil(L);
-      lua_pushstring(L, "arg 3 (shaderStack) must be table");
-      return 2;
-    }
-    
-    // Get parameters
-    lua_getfield(L, 2, "width");
-    int width = lua_tointeger(L, -1);
+    int absStackIdx = lua_absindex(L, stackIdx);
+
+    int width = (int)getNum(L, 2, "width", 200);
+    if (width <= 0) width = 200;
+    int height = (int)getNum(L, 2, "height", 200);
+    if (height <= 0) height = 200;
+
+    float scale = (float)getNum(L, 2, "scale", -12345.0);
+    if (scale < 0) scale = (float)getNum(L, 2, "scaleLevel", 1.0);
+    if (scale <= 0.f) scale = 1.f;
+
+    bool meshMode = false;
+    lua_getfield(L, 2, "mesh");
+    if (lua_isboolean(L, -1)) meshMode = lua_toboolean(L, -1) != 0;
     lua_pop(L, 1);
-    
-    lua_getfield(L, 2, "height");
-    int height = lua_tointeger(L, -1);
-    lua_pop(L, 1);
-    
-    if (width <= 0 || height <= 0) {
-      lua_pushnil(L);
-      lua_pushstring(L, "width and height must be > 0");
-      return 2;
+    if (!meshMode) {
+      lua_getfield(L, 2, "meshMode");
+      if (lua_isboolean(L, -1)) meshMode = lua_toboolean(L, -1) != 0;
+      lua_pop(L, 1);
     }
-    
-    // Read voxel model
+
+    double xRot = getNum(L, 2, "xRotation", 0.0);
+    double yRot = getNum(L, 2, "yRotation", 0.0);
+    double zRot = getNum(L, 2, "zRotation", 0.0);
+    float fovDeg = (float)getNum(L, 2, "fovDegrees", 0.0);
+
+    lua_getfield(L, 2, "orthogonal");
+    bool orthogonal = lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+
+    std::string perspRef = "middle";
+    lua_getfield(L, 2, "perspectiveScaleRef");
+    if (lua_isstring(L, -1)) {
+      const char* pr = lua_tostring(L, -1);
+      if (pr && *pr) perspRef = pr;
+    }
+    lua_pop(L, 1);
+
+    unsigned char bgR = 0, bgG = 0, bgB = 0, bgA = 0;
+    lua_getfield(L, 2, "backgroundColor");
+    if (lua_istable(L, -1)) {
+      bgR = (unsigned char)getFieldInteger(L, -1, "r", 0);
+      bgG = (unsigned char)getFieldInteger(L, -1, "g", 0);
+      bgB = (unsigned char)getFieldInteger(L, -1, "b", 0);
+      bgA = (unsigned char)getFieldInteger(L, -1, "a", 0);
+    }
+    lua_pop(L, 1);
+
+    size_t count = lua_rawlen(L, 1);
     std::vector<Voxel> voxels;
-    lua_pushnil(L);
-    while (lua_next(L, 1) != 0) {
+    voxels.reserve(count);
+    float minX = 1e9f, minY = 1e9f, minZ = 1e9f;
+    float maxX = -1e9f, maxY = -1e9f, maxZ = -1e9f;
+
+    for (size_t i = 1; i <= count; ++i) {
+      lua_rawgeti(L, 1, (int)i);
       if (lua_istable(L, -1)) {
-        Voxel v;
-        v.x = (float)getNum(L, -1, "x", 0.0);
-        v.y = (float)getNum(L, -1, "y", 0.0);
-        v.z = (float)getNum(L, -1, "z", 0.0);
-        
-        // Get color
-        lua_getfield(L, -1, "color");
-        if (lua_istable(L, -1)) {
-          v.r = (unsigned char)getNum(L, -1, "r", 255);
-          v.g = (unsigned char)getNum(L, -1, "g", 255);
-          v.b = (unsigned char)getNum(L, -1, "b", 255);
-          v.a = (unsigned char)getNum(L, -1, "a", 255);
-        } else {
-          v.r = v.g = v.b = v.a = 255;
-        }
+        int tblIdx = lua_gettop(L);
+        Voxel v{0,0,0,255,255,255,255};
+        lua_rawgeti(L, tblIdx, 1);
+        bool numeric = lua_isnumber(L, -1) != 0;
         lua_pop(L, 1);
-        
+        if (numeric) {
+          lua_rawgeti(L, tblIdx, 1); v.x = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+          lua_rawgeti(L, tblIdx, 2); v.y = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+          lua_rawgeti(L, tblIdx, 3); v.z = (float)lua_tonumber(L, -1); lua_pop(L, 1);
+          lua_rawgeti(L, tblIdx, 4); v.r = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+          lua_rawgeti(L, tblIdx, 5); v.g = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+          lua_rawgeti(L, tblIdx, 6); v.b = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+          lua_rawgeti(L, tblIdx, 7); v.a = (unsigned char)lua_tointeger(L, -1); lua_pop(L, 1);
+        } else {
+          v.x = (float)getNum(L, tblIdx, "x", 0.0);
+          v.y = (float)getNum(L, tblIdx, "y", 0.0);
+          v.z = (float)getNum(L, tblIdx, "z", 0.0);
+          lua_getfield(L, tblIdx, "color");
+          if (lua_istable(L, -1)) {
+            v.r = (unsigned char)getFieldInteger(L, -1, "r", 255);
+            v.g = (unsigned char)getFieldInteger(L, -1, "g", 255);
+            v.b = (unsigned char)getFieldInteger(L, -1, "b", 255);
+            v.a = (unsigned char)getFieldInteger(L, -1, "a", 255);
+          }
+          lua_pop(L, 1);
+        }
+        if (v.x < minX) minX = v.x; if (v.x > maxX) maxX = v.x;
+        if (v.y < minY) minY = v.y; if (v.y > maxY) maxY = v.y;
+        if (v.z < minZ) minZ = v.z; if (v.z > maxZ) maxZ = v.z;
         voxels.push_back(v);
       }
       lua_pop(L, 1);
     }
-    
+
     if (voxels.empty()) {
-      lua_pushnil(L);
-      lua_pushstring(L, "no voxels in model");
-      return 2;
+      std::vector<unsigned char> buffer((size_t)width * height * 4, 0);
+      for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+          size_t off = ((size_t)y * width + x) * 4;
+          buffer[off+0] = bgR;
+          buffer[off+1] = bgG;
+          buffer[off+2] = bgB;
+          buffer[off+3] = bgA;
+        }
+      }
+      if (createdStackTable) lua_pop(L, 1);
+      lua_createtable(L, 0, 3);
+      lua_pushinteger(L, width); lua_setfield(L, -2, "width");
+      lua_pushinteger(L, height); lua_setfield(L, -2, "height");
+      lua_pushlstring(L, (const char*)buffer.data(), buffer.size()); lua_setfield(L, -2, "pixels");
+      return 1;
     }
-    
-    // Get rotation parameters
-    double xRot = getNum(L, 2, "xRotation", 0.0);
-    double yRot = getNum(L, 2, "yRotation", 0.0);
-    double zRot = getNum(L, 2, "zRotation", 0.0);
-    double scale = getNum(L, 2, "scale", 1.0);
-    
-    lua_getfield(L, 2, "orthogonal");
-    bool orthogonal = lua_toboolean(L, -1);
-    lua_pop(L, 1);
-    
-    // Calculate middle point
-    float minX = voxels[0].x, maxX = voxels[0].x;
-    float minY = voxels[0].y, maxY = voxels[0].y;
-    float minZ = voxels[0].z, maxZ = voxels[0].z;
-    
-    for (const auto& v : voxels) {
-      if (v.x < minX) minX = v.x;
-      if (v.x > maxX) maxX = v.x;
-      if (v.y < minY) minY = v.y;
-      if (v.y > maxY) maxY = v.y;
-      if (v.z < minZ) minZ = v.z;
-      if (v.z > maxZ) maxZ = v.z;
-    }
-    
-    float midX = (minX + maxX) / 2.0f;
-    float midY = (minY + maxY) / 2.0f;
-    float midZ = (minZ + maxZ) / 2.0f;
-    
-    // Rotation matrices
-    const double RX = xRot * PI / 180.0;
-    const double RY = yRot * PI / 180.0;
-    const double RZ = zRot * PI / 180.0;
-    const double cx = std::cos(RX), sx = std::sin(RX);
-    const double cy = std::cos(RY), sy = std::sin(RY);
-    const double cz = std::cos(RZ), sz = std::sin(RZ);
-    
-    // Face definitions
-    struct FaceInfo {
-      const char* name;
-      float nx, ny, nz;
-      int indices[4];
-    };
-    
-    const FaceInfo faces[] = {
-      {"front",  0, 0, 1,  {0,1,2,3}},
-      {"back",   0, 0, -1, {5,4,7,6}},
-      {"right",  1, 0, 0,  {1,5,6,2}},
-      {"left",  -1, 0, 0,  {4,0,3,7}},
-      {"top",    0, 1, 0,  {3,2,6,7}},
-      {"bottom", 0, -1, 0, {4,5,1,0}}
-    };
-    
-    // Cube vertices (centered at 0,0,0)
-    const float cubeVerts[8][3] = {
-      {-0.5f, -0.5f, -0.5f}, {0.5f, -0.5f, -0.5f},
-      {0.5f, 0.5f, -0.5f}, {-0.5f, 0.5f, -0.5f},
-      {-0.5f, -0.5f, 0.5f}, {0.5f, -0.5f, 0.5f},
-      {0.5f, 0.5f, 0.5f}, {-0.5f, 0.5f, 0.5f}
-    };
-    
-    // Build face list with shader application
-    std::vector<FacePoly> polys;
-    polys.reserve(voxels.size() * 6);
-    
-    const float projDist = 100.0f;
-    const float halfW = width / 2.0f;
-    const float halfH = height / 2.0f;
-    
-    for (const auto& voxel : voxels) {
-      for (const auto& face : faces) {
-        // Transform face normal
-        float nx = face.nx, ny = face.ny, nz = face.nz;
-        float ny2 = ny * cx - nz * sx;
-        float nz2 = ny * sx + nz * cx;
-        ny = ny2; nz = nz2;
-        
-        float nx2 = nx * cy + nz * sy;
-        float nz3 = -nx * sy + nz * cy;
-        nx = nx2; nz = nz3;
-        
-        float nx3 = nx * cz - ny * sz;
-        float ny3 = nx * sz + ny * cz;
-        nx = nx3; ny = ny3;
-        
-        // Backface culling
-        if (nz <= 0.0f) continue;
-        
-        // Build face quad
-        FacePoly poly;
-        float avgDepth = 0.0f;
-        
-        for (int vi = 0; vi < 4; vi++) {
-          const float* vert = cubeVerts[face.indices[vi]];
-          float x = voxel.x + vert[0] - midX;
-          float y = voxel.y + vert[1] - midY;
-          float z = voxel.z + vert[2] - midZ;
-          
-          // Rotate
-          float y2 = y * cx - z * sx;
-          float z2 = y * sx + z * cx;
-          y = y2; z = z2;
-          
-          float x2 = x * cy + z * sy;
-          float z3 = -x * sy + z * cy;
-          x = x2; z = z3;
-          
-          float x3 = x * cz - y * sz;
-          float y3 = x * sz + y * cz;
-          x = x3; y = y3;
-          
-          // Project
-          if (orthogonal) {
-            poly.x[vi] = halfW + x * scale;
-            poly.y[vi] = halfH - y * scale;
-          } else {
-            float factor = projDist / std::max(0.01f, projDist - z);
-            poly.x[vi] = halfW + x * scale * factor;
-            poly.y[vi] = halfH - y * scale * factor;
-          }
-          
-          avgDepth += (projDist - z);
-        }
-        poly.depth = avgDepth / 4.0f;
-        
-        // Apply Lua shader stack to this face
-        // Build shaderData table and call shader.process() for each shader
-        
-        // Create shaderData table
-        lua_newtable(L); // shaderData
-        
-        // shaderData.faces = { {voxel=..., face=..., normal=..., color=...} }
-        lua_newtable(L); // faces array
-        lua_pushinteger(L, 1);
-        lua_newtable(L); // face table
-        
-        // face.voxel = {x, y, z, color}
-        lua_newtable(L);
-        lua_pushnumber(L, voxel.x); lua_setfield(L, -2, "x");
-        lua_pushnumber(L, voxel.y); lua_setfield(L, -2, "y");
-        lua_pushnumber(L, voxel.z); lua_setfield(L, -2, "z");
-        lua_newtable(L);
-        lua_pushinteger(L, voxel.r); lua_setfield(L, -2, "r");
-        lua_pushinteger(L, voxel.g); lua_setfield(L, -2, "g");
-        lua_pushinteger(L, voxel.b); lua_setfield(L, -2, "b");
-        lua_pushinteger(L, voxel.a); lua_setfield(L, -2, "a");
-        lua_setfield(L, -2, "color");
-        lua_setfield(L, -2, "voxel");
-        
-        // face.face = "front" (face name)
-        lua_pushstring(L, face.name);
-        lua_setfield(L, -2, "face");
-        
-        // face.normal = {x, y, z} (rotated normal)
-        lua_newtable(L);
-        lua_pushnumber(L, nx); lua_setfield(L, -2, "x");
-        lua_pushnumber(L, ny); lua_setfield(L, -2, "y");
-        lua_pushnumber(L, nz); lua_setfield(L, -2, "z");
-        lua_setfield(L, -2, "normal");
-        
-        // face.color = voxel.color (initial)
-        lua_newtable(L);
-        lua_pushinteger(L, voxel.r); lua_setfield(L, -2, "r");
-        lua_pushinteger(L, voxel.g); lua_setfield(L, -2, "g");
-        lua_pushinteger(L, voxel.b); lua_setfield(L, -2, "b");
-        lua_pushinteger(L, voxel.a); lua_setfield(L, -2, "a");
-        lua_setfield(L, -2, "color");
-        
-        lua_settable(L, -3); // faces[1] = face
-        lua_setfield(L, -2, "faces"); // shaderData.faces = faces
-        
-        // shaderData.camera = params
-        lua_pushvalue(L, 2);
-        lua_setfield(L, -2, "camera");
-        
-        // shaderData.params = shaderStack.params
-        lua_getfield(L, 3, "params");
-        lua_setfield(L, -2, "params");
-        
-        // Execute lighting shaders (bottom-to-top)
-        lua_getfield(L, 3, "lighting");
-        if (lua_istable(L, -1)) {
-          int lightingCount = lua_rawlen(L, -1);
-          for (int i = lightingCount; i >= 1; i--) {
-            lua_rawgeti(L, -1, i);
-            if (lua_istable(L, -1)) {
-              // Check if enabled
-              lua_getfield(L, -1, "enabled");
-              bool enabled = true;
-              if (lua_isboolean(L, -1)) {
-                enabled = lua_toboolean(L, -1);
-              }
-              lua_pop(L, 1);
-              
-              if (enabled) {
-                // Get shader ID
-                lua_getfield(L, -1, "id");
-                const char* shaderId = lua_tostring(L, -1);
-                lua_pop(L, 1);
-                
-                if (shaderId) {
-                  // Get shader module from registry
-                  lua_getglobal(L, "AseVoxel");
-                  lua_getfield(L, -1, "render");
-                  lua_getfield(L, -1, "shader_stack");
-                  lua_getfield(L, -1, "registry");
-                  lua_getfield(L, -1, "lighting");
-                  lua_getfield(L, -1, shaderId);
-                  
-                  if (lua_istable(L, -1)) {
-                    lua_getfield(L, -1, "process");
-                    if (lua_isfunction(L, -1)) {
-                      // Call shader.process(shaderData, params)
-                      lua_pushvalue(L, -8); // shaderData
-                      lua_getfield(L, 3, "params");
-                      
-                      if (lua_pcall(L, 2, 1, 0) == LUA_OK) {
-                        // Replace shaderData with result
-                        lua_replace(L, -8);
-                      } else {
-                        lua_pop(L, 1); // error
-                      }
-                    } else {
-                      lua_pop(L, 1);
-                    }
-                  }
-                  lua_pop(L, 6); // shader, lighting, registry, shader_stack, render, AseVoxel
-                }
-              }
-            }
-            lua_pop(L, 1); // shader entry
-          }
-        }
-        lua_pop(L, 1); // lighting
-        
-        // Execute FX shaders (bottom-to-top)
-        lua_getfield(L, 3, "fx");
-        if (lua_istable(L, -1)) {
-          int fxCount = lua_rawlen(L, -1);
-          for (int i = fxCount; i >= 1; i--) {
-            lua_rawgeti(L, -1, i);
-            if (lua_istable(L, -1)) {
-              // Check if enabled
-              lua_getfield(L, -1, "enabled");
-              bool enabled = true;
-              if (lua_isboolean(L, -1)) {
-                enabled = lua_toboolean(L, -1);
-              }
-              lua_pop(L, 1);
-              
-              if (enabled) {
-                // Get shader ID
-                lua_getfield(L, -1, "id");
-                const char* shaderId = lua_tostring(L, -1);
-                lua_pop(L, 1);
-                
-                if (shaderId) {
-                  // Get shader module from registry
-                  lua_getglobal(L, "AseVoxel");
-                  lua_getfield(L, -1, "render");
-                  lua_getfield(L, -1, "shader_stack");
-                  lua_getfield(L, -1, "registry");
-                  lua_getfield(L, -1, "fx");
-                  lua_getfield(L, -1, shaderId);
-                  
-                  if (lua_istable(L, -1)) {
-                    lua_getfield(L, -1, "process");
-                    if (lua_isfunction(L, -1)) {
-                      // Call shader.process(shaderData, params)
-                      lua_pushvalue(L, -8); // shaderData
-                      lua_getfield(L, 3, "params");
-                      
-                      if (lua_pcall(L, 2, 1, 0) == LUA_OK) {
-                        // Replace shaderData with result
-                        lua_replace(L, -8);
-                      } else {
-                        lua_pop(L, 1); // error
-                      }
-                    } else {
-                      lua_pop(L, 1);
-                    }
-                  }
-                  lua_pop(L, 6); // shader, fx, registry, shader_stack, render, AseVoxel
-                }
-              }
-            }
-            lua_pop(L, 1); // shader entry
-          }
-        }
-        lua_pop(L, 1); // fx
-        
-        // Extract final color from shaderData.faces[1].color
-        lua_getfield(L, -1, "faces");
-        lua_rawgeti(L, -1, 1);
-        lua_getfield(L, -1, "color");
-        
-        if (lua_istable(L, -1)) {
-          poly.r = (unsigned char)getNum(L, -1, "r", voxel.r);
-          poly.g = (unsigned char)getNum(L, -1, "g", voxel.g);
-          poly.b = (unsigned char)getNum(L, -1, "b", voxel.b);
-          poly.a = (unsigned char)getNum(L, -1, "a", voxel.a);
-        } else {
-          poly.r = voxel.r;
-          poly.g = voxel.g;
-          poly.b = voxel.b;
-          poly.a = voxel.a;
-        }
-        
-        lua_pop(L, 4); // color, face, faces, shaderData
-        
-        polys.push_back(poly);
+
+    std::unordered_set<std::string> occ;
+    if (meshMode) {
+      occ.reserve(voxels.size() * 2);
+      for (const auto& v : voxels) {
+        int ix = (int)std::lround(v.x);
+        int iy = (int)std::lround(v.y);
+        int iz = (int)std::lround(v.z);
+        occ.emplace(std::to_string(ix) + "," + std::to_string(iy) + "," + std::to_string(iz));
       }
     }
-    
-    // Sort by depth (painter's algorithm)
+
+    float midX = 0.5f * (minX + maxX);
+    float midY = 0.5f * (minY + maxY);
+    float midZ = 0.5f * (minZ + maxZ);
+    float sizeX = maxX - minX + 1.f;
+    float sizeY = maxY - minY + 1.f;
+    float sizeZ = maxZ - minZ + 1.f;
+    float maxDim = std::max(sizeX, std::max(sizeY, sizeZ));
+
+    float RX = (float)(xRot * PI / 180.0);
+    float RY = (float)(yRot * PI / 180.0);
+    float RZ = (float)(zRot * PI / 180.0);
+    float cx = std::cos(RX), sx = std::sin(RX);
+    float cy = std::cos(RY), sy = std::sin(RY);
+    float cz = std::cos(RZ), sz = std::sin(RZ);
+
+    bool perspective = (!orthogonal && fovDeg > 0.f);
+    float focalLength = 0.f;
+    float camDist;
+    if (perspective) {
+      fovDeg = std::max(5.f, std::min(75.f, fovDeg));
+      float warpT = (fovDeg - 5.f) / (75.f - 5.f);
+      if (warpT < 0.f) warpT = 0.f; if (warpT > 1.f) warpT = 1.f;
+      float amplified = std::pow(warpT, 1.f/3.f);
+      const float BASE_NEAR = 1.2f;
+      const float FAR_EXTRA = 45.f;
+      camDist = maxDim * (BASE_NEAR + (1.f - amplified)*(1.f - amplified) * FAR_EXTRA);
+      float fovRad = fovDeg * (float)PI / 180.f;
+      focalLength = (height / 2.f) / std::tan(fovRad / 2.f);
+    } else {
+      camDist = maxDim * 5.f;
+    }
+
+    float voxelSize = scale;
+    {
+      float maxAllowedPixels = std::min(width, height) * 0.9f;
+      if (perspective && focalLength > 1e-6f && maxDim > 0.f) {
+        float rcx = std::cos(RX), rsx = std::sin(RX);
+        float rcy = std::cos(RY), rsy = std::sin(RY);
+        float rcz = std::cos(RZ), rsz = std::sin(RZ);
+        float zMinRot = 1e9f;
+        float zMaxRot = -1e9f;
+        for (int ix = 0; ix < 2; ++ix) {
+          float cxv = (ix == 0) ? minX : maxX;
+          for (int iy = 0; iy < 2; ++iy) {
+            float cyv = (iy == 0) ? minY : maxY;
+            for (int iz = 0; iz < 2; ++iz) {
+              float czv = (iz == 0) ? minZ : maxZ;
+              float X = cxv - midX;
+              float Y = cyv - midY;
+              float Z = czv - midZ;
+              { float Y2 = Y * rcx - Z * rsx; float Z2 = Y * rsx + Z * rcx; Y = Y2; Z = Z2; }
+              { float X2 = X * rcy + Z * rsy; float Z3 = -X * rsy + Z * rcy; X = X2; Z = Z3; }
+              { float X3 = X * rcz - Y * rsz; float Y3 = X * rsz + Y * rcz; X = X3; Y = Y3; }
+              float worldZ = Z + midZ;
+              if (worldZ < zMinRot) zMinRot = worldZ;
+              if (worldZ > zMaxRot) zMaxRot = worldZ;
+            }
+          }
+        }
+        float cameraZ = midZ + camDist;
+        float depthBack = std::max(0.001f, cameraZ - zMinRot);
+        float depthFront = std::max(0.001f, cameraZ - zMaxRot);
+        float depthMiddle = std::max(0.001f, camDist);
+        float depthRef = depthMiddle;
+        if (perspRef == "front" || perspRef == "Front") depthRef = depthFront;
+        else if (perspRef == "back" || perspRef == "Back") depthRef = depthBack;
+        voxelSize = scale * (depthRef / focalLength);
+        if (voxelSize * maxDim > maxAllowedPixels) voxelSize = maxAllowedPixels / maxDim;
+        if (voxelSize <= 0.f) voxelSize = 1.f;
+      } else {
+        if (voxelSize < 1.f) voxelSize = 1.f;
+        if (voxelSize * maxDim > maxAllowedPixels && maxDim > 0.f)
+          voxelSize *= (maxAllowedPixels / (voxelSize * maxDim));
+      }
+    }
+
+    float threshold = 0.01f / std::min(3.0f, voxelSize);
+
+    float gvx = 0.f, gvy = 0.f, gvz = 1.f;
+    if (perspective) {
+      gvx = 0.f;
+      gvy = 0.f;
+      gvz = camDist;
+      float gmag = std::sqrt(gvx*gvx + gvy*gvy + gvz*gvz);
+      if (gmag > 1e-6f) { gvx /= gmag; gvy /= gmag; gvz /= gmag; }
+    }
+
+    struct NeighborOffset { int dx, dy, dz; };
+    static const NeighborOffset neigh[6] = {
+      {0,0,1}, {0,0,-1}, {1,0,0}, {-1,0,0}, {0,1,0}, {0,-1,0}
+    };
+    static const char* FACE_NAMES[6] = {"front","back","right","left","top","bottom"};
+
+    ShaderData shaderData;
+    shaderData.faces.reserve(voxels.size() * 6);
+    shaderData.cameraX = midX;
+    shaderData.cameraY = midY;
+    shaderData.cameraZ = midZ + camDist;
+    shaderData.cameraDirX = 0.f;
+    shaderData.cameraDirY = 0.f;
+    shaderData.cameraDirZ = -1.f;
+    shaderData.middleX = midX;
+    shaderData.middleY = midY;
+    shaderData.middleZ = midZ;
+    shaderData.width = width;
+    shaderData.height = height;
+    shaderData.voxelSize = voxelSize;
+
+    std::vector<FacePoly> polys;
+    polys.reserve(voxels.size() * 6);
+    std::vector<size_t> faceMap;
+    faceMap.reserve(voxels.size() * 6);
+
+    float screenCX = width * 0.5f;
+    float screenCY = height * 0.5f;
+    float camX = midX;
+    float camY = midY;
+    float camZ = midZ + camDist;
+
+    for (const auto& v : voxels) {
+      float x = v.x - midX;
+      float y = v.y - midY;
+      float z = v.z - midZ;
+      { float y2 = y * cx - z * sx; float z2 = y * sx + z * cx; y = y2; z = z2; }
+      { float x2 = x * cy + z * sy; float z3 = -x * sy + z * cy; x = x2; z = z3; }
+      { float x3 = x * cz - y * sz; float y3 = x * sz + y * cz; x = x3; y = y3; }
+      float worldX = x + midX;
+      float worldY = y + midY;
+      float worldZ = z + midZ;
+
+      float vxv = gvx, vyv = gvy, vzv = gvz;
+      if (perspective) {
+        float pvx = camX - worldX;
+        float pvy = camY - worldY;
+        float pvz = camZ - worldZ;
+        float pmag = std::sqrt(pvx*pvx + pvy*pvy + pvz*pvz);
+        if (pmag > 1e-5f) { pvx /= pmag; pvy /= pmag; pvz /= pmag; }
+        vxv = pvx; vyv = pvy; vzv = pvz;
+      }
+
+      for (int f = 0; f < 6; ++f) {
+        if (meshMode) {
+          int ix = (int)std::lround(v.x);
+          int iy = (int)std::lround(v.y);
+          int iz = (int)std::lround(v.z);
+          int nx = ix + neigh[f].dx;
+          int ny = iy + neigh[f].dy;
+          int nz = iz + neigh[f].dz;
+          std::string key = std::to_string(nx) + "," + std::to_string(ny) + "," + std::to_string(nz);
+          if (occ.find(key) != occ.end()) continue;
+        }
+
+        float nx = LOCAL_FACE_NORMALS[f][0];
+        float ny = LOCAL_FACE_NORMALS[f][1];
+        float nz = LOCAL_FACE_NORMALS[f][2];
+        rotateNormal(nx, ny, nz, cx, sx, cy, sy, cz, sz);
+
+        float visDot = nx * gvx + ny * gvy + nz * gvz;
+        if (visDot <= threshold) continue;
+
+        ShaderFace faceEntry;
+        faceEntry.voxelX = v.x;
+        faceEntry.voxelY = v.y;
+        faceEntry.voxelZ = v.z;
+        faceEntry.faceName = FACE_NAMES[f];
+        faceEntry.normalX = nx;
+        faceEntry.normalY = ny;
+        faceEntry.normalZ = nz;
+        faceEntry.r = v.r;
+        faceEntry.g = v.g;
+        faceEntry.b = v.b;
+        faceEntry.a = v.a;
+        faceEntry.baseR = v.r;
+        faceEntry.baseG = v.g;
+        faceEntry.baseB = v.b;
+        faceEntry.baseA = v.a;
+        shaderData.faces.push_back(faceEntry);
+        size_t faceIdx = shaderData.faces.size() - 1;
+
+        FacePoly poly{};
+        float avgDepth = 0.f;
+        bool usePerspective = perspective;
+        for (int vi = 0; vi < 4; ++vi) {
+          int vidx = FACE_IDX[f][vi] - 1;
+          float lx = UNIT_VERTS[vidx][0] * voxelSize;
+          float ly = UNIT_VERTS[vidx][1] * voxelSize;
+          float lz = UNIT_VERTS[vidx][2] * voxelSize;
+          rotateNormal(lx, ly, lz, cx, sx, cy, sy, cz, sz);
+          float wx = worldX * voxelSize + lx;
+          float wy = worldY * voxelSize + ly;
+          float wzLocal = worldZ + (lz / voxelSize);
+          float depth;
+          float s = 1.0f;
+          if (usePerspective) {
+            depth = (camZ - wzLocal);
+            if (depth < 0.001f) depth = 0.001f;
+            s = (focalLength > 0.0f) ? (focalLength / depth) : 1.0f;
+          } else {
+            depth = (camZ - wzLocal) + nz * 0.001f;
+          }
+          poly.x[vi] = screenCX + (wx - midX * voxelSize) * s;
+          poly.y[vi] = screenCY + (wy - midY * voxelSize) * s;
+          avgDepth += depth;
+        }
+        poly.depth = avgDepth / 4.f;
+        poly.a = v.a;
+        polys.push_back(poly);
+        faceMap.push_back(faceIdx);
+      }
+    }
+
+    auto resetToBase = [&]() {
+      for (auto& face : shaderData.faces) {
+        face.r = face.baseR;
+        face.g = face.baseG;
+        face.b = face.baseB;
+        face.a = face.baseA;
+      }
+    };
+
+    auto applyShaderList = [&](const char* fieldName, const std::unordered_map<std::string, ShaderFunc>& registry) {
+      lua_getfield(L, absStackIdx, fieldName);
+      if (lua_istable(L, -1)) {
+        int len = lua_rawlen(L, -1);
+        for (int i = 1; i <= len; ++i) {
+          lua_rawgeti(L, -1, i);
+          if (lua_istable(L, -1)) {
+            bool enabled = true;
+            lua_getfield(L, -1, "enabled");
+            if (lua_isboolean(L, -1)) enabled = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            if (!enabled) {
+              lua_pop(L, 1);
+              continue;
+            }
+            lua_getfield(L, -1, "id");
+            const char* shaderId = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            if (!shaderId || !*shaderId) {
+              lua_pop(L, 1);
+              continue;
+            }
+            auto it = registry.find(shaderId);
+            if (it == registry.end()) {
+              lua_pop(L, 1);
+              continue;
+            }
+            std::string inputFrom;
+            lua_getfield(L, -1, "inputFrom");
+            if (lua_isstring(L, -1)) inputFrom = lua_tostring(L, -1);
+            lua_pop(L, 1);
+            ShaderParams params;
+            lua_getfield(L, -1, "params");
+            if (lua_istable(L, -1)) {
+              params = parseShaderParams(L, lua_gettop(L));
+            }
+            lua_pop(L, 1);
+            if (inputFrom == "base_color" || inputFrom == "geometry") {
+              resetToBase();
+            }
+            it->second(shaderData, params);
+          }
+          lua_pop(L, 1);
+        }
+      }
+      lua_pop(L, 1);
+    };
+
+    applyShaderList("lighting", g_lightingShaders);
+    applyShaderList("fx", g_fxShaders);
+
+    for (size_t i = 0; i < polys.size(); ++i) {
+      const ShaderFace& face = shaderData.faces[faceMap[i]];
+      polys[i].r = face.r;
+      polys[i].g = face.g;
+      polys[i].b = face.b;
+      polys[i].a = face.a;
+    }
+
     std::sort(polys.begin(), polys.end(), [](const FacePoly& a, const FacePoly& b) {
       return a.depth > b.depth;
     });
-    
-    // Rasterize
+
     std::vector<unsigned char> buffer((size_t)width * height * 4, 0);
-    
-    // Clear background
-    unsigned char bgR = 240, bgG = 240, bgB = 240, bgA = 255;
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
+    for (int y = 0; y < height; ++y) {
+      for (int x = 0; x < width; ++x) {
         size_t off = ((size_t)y * width + x) * 4;
-        buffer[off + 0] = bgR;
-        buffer[off + 1] = bgG;
-        buffer[off + 2] = bgB;
-        buffer[off + 3] = bgA;
+        buffer[off+0] = bgR;
+        buffer[off+1] = bgG;
+        buffer[off+2] = bgB;
+        buffer[off+3] = bgA;
       }
     }
-    
-    // Draw faces
     for (const auto& poly : polys) {
       rasterQuad(poly, width, height, buffer);
     }
-    
-    // Return result table
-    lua_newtable(L);
-    lua_pushboolean(L, 1);
-    lua_setfield(L, -2, "success");
-    
-    lua_pushinteger(L, width);
-    lua_setfield(L, -2, "width");
-    
-    lua_pushinteger(L, height);
-    lua_setfield(L, -2, "height");
-    
-    lua_pushinteger(L, polys.size());
-    lua_setfield(L, -2, "faceCount");
-    
-    lua_pushlstring(L, (const char*)buffer.data(), buffer.size());
-    lua_setfield(L, -2, "pixels");
-    
+
+    if (createdStackTable) lua_pop(L, 1);
+
+    lua_createtable(L, 0, 3);
+    lua_pushinteger(L, width); lua_setfield(L, -2, "width");
+    lua_pushinteger(L, height); lua_setfield(L, -2, "height");
+    lua_pushlstring(L, (const char*)buffer.data(), buffer.size()); lua_setfield(L, -2, "pixels");
     return 1;
   }},
   
@@ -2476,19 +2797,24 @@ static const luaL_Reg FUNCS[] = {
           lua_getfield(L, -1, "r");
           face.r = lua_isnumber(L, -1) ? (unsigned char)lua_tointeger(L, -1) : 255;
           lua_pop(L, 1);
-          
+
           lua_getfield(L, -1, "g");
           face.g = lua_isnumber(L, -1) ? (unsigned char)lua_tointeger(L, -1) : 255;
           lua_pop(L, 1);
-          
+
           lua_getfield(L, -1, "b");
           face.b = lua_isnumber(L, -1) ? (unsigned char)lua_tointeger(L, -1) : 255;
           lua_pop(L, 1);
-          
+
           lua_getfield(L, -1, "a");
           face.a = lua_isnumber(L, -1) ? (unsigned char)lua_tointeger(L, -1) : 255;
           lua_pop(L, 1);
-          
+
+          face.baseR = face.r;
+          face.baseG = face.g;
+          face.baseB = face.b;
+          face.baseA = face.a;
+
           data.faces.push_back(face);
         }
         lua_pop(L, 1);
@@ -2545,49 +2871,6 @@ static const luaL_Reg FUNCS[] = {
     data.voxelSize = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : 1;
     lua_pop(L, 1);
     
-    // Helper lambda to parse shader params
-    auto parseParams = [L](int tableIdx) -> ShaderParams {
-      ShaderParams params;
-      
-      lua_pushnil(L);
-      while (lua_next(L, tableIdx) != 0) {
-        const char* key = lua_tostring(L, -2);
-        if (!key) { lua_pop(L, 1); continue; }
-        
-        if (lua_isnumber(L, -1)) {
-          params.numbers[key] = lua_tonumber(L, -1);
-        } else if (lua_isstring(L, -1)) {
-          params.strings[key] = lua_tostring(L, -1);
-        } else if (lua_isboolean(L, -1)) {
-          params.bools[key] = lua_toboolean(L, -1);
-        } else if (lua_istable(L, -1)) {
-          // Check if it's a color (has r,g,b,a fields)
-          lua_getfield(L, -1, "r");
-          bool isColor = lua_isnumber(L, -1);
-          lua_pop(L, 1);
-          
-          if (isColor) {
-            std::array<unsigned char, 4> color = {255,255,255,255};
-            lua_getfield(L, -1, "r");
-            if (lua_isnumber(L, -1)) color[0] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "g");
-            if (lua_isnumber(L, -1)) color[1] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "b");
-            if (lua_isnumber(L, -1)) color[2] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            lua_getfield(L, -1, "a");
-            if (lua_isnumber(L, -1)) color[3] = (unsigned char)lua_tointeger(L, -1);
-            lua_pop(L, 1);
-            params.colors[key] = color;
-          }
-        }
-        lua_pop(L, 1);
-      }
-      return params;
-    };
-    
     // Execute lighting shaders (bottom to top)
     lua_getfield(L, 2, "lighting");
     if (lua_istable(L, -1)) {
@@ -2607,9 +2890,9 @@ static const luaL_Reg FUNCS[] = {
             
             if (shaderId && g_lightingShaders.count(shaderId)) {
               lua_getfield(L, -1, "params");
-              ShaderParams params = parseParams(lua_gettop(L));
+              ShaderParams params = parseShaderParams(L, lua_gettop(L));
               lua_pop(L, 1);
-              
+
               g_lightingShaders[shaderId](data, params);
             }
           }
@@ -2638,9 +2921,9 @@ static const luaL_Reg FUNCS[] = {
             
             if (shaderId && g_fxShaders.count(shaderId)) {
               lua_getfield(L, -1, "params");
-              ShaderParams params = parseParams(lua_gettop(L));
+              ShaderParams params = parseShaderParams(L, lua_gettop(L));
               lua_pop(L, 1);
-              
+
               g_fxShaders[shaderId](data, params);
             }
           }
