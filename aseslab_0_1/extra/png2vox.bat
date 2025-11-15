@@ -1,0 +1,1 @@
+python png2vox.py -i %1.png -c %2 -r %3 -f %4

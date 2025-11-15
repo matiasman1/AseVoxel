@@ -1,0 +1,29 @@
+
+: png2vox.py
+
+This is a rudimentary Python script that converts a PNG image to a VOX file,
+using Ken Silverman's spec from his Slab6 project. This script is not intended
+for serious use, but it is instead bundled here as a basic voxel model exporter,
+to test out the basic functionality of aseSlab, and the resulting images and
+models you can create with this preview suite.
+
+Naturally, the script requires Python (3.10 or newer) to be installed for the
+script to work. More importantly, for serious voxel projects in gamedev and art,
+we actually recommend developing your own application for this task, or using
+any of the multiple voxel art programs available online, such as MagicaVoxel,
+Qubicle, or anything else actually suited for this task.
+
+As for this Python script, this is how it's used:
+
+  png2vox.py -i [input image] -c [tile columns] -r [tile rows]
+
+Where the input image is a tileset of different slices of the voxel model; the
+tile columns is the amount of tiles placed horizontally; and the tile rows, the
+same but vertically. You can also use -o to specify the output voxel model's
+filename, and -f to specify towards which direction the voxel model will be
+oriented to ("front" being the default). Use "png2.vox.py -h" for more
+information.
+
+Feel free to use the Python script as the basis for your own software if needed.
+But again, there's free voxel software more appropriate for this task, and you'd
+be better off looking into that than using this prototype script.

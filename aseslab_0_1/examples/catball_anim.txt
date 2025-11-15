@@ -1,0 +1,13 @@
+
+SPRITE SETTINGS
+    Tile size:          16 by 16
+    Tiles per image:    4 columns, 4 rows.
+    Render all layers:  Yes
+
+USAGE
+    This voxel sprite shows how the script is capable of rendering both
+    multiple layers and also live animations on the preview.
+
+LICENSE
+    The voxel sprite is Copyright © 2024 by kid marscat,
+    provided here for educational purposes only.

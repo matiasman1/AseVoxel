@@ -1,0 +1,13 @@
+
+SPRITES SETTINGS:
+  Tile size:          16 by 16
+  Tiles per image:    4 columns, 4 rows.
+  Render all layers:  No
+
+USAGE:
+  Feel free to use these generic models as the template for your voxel
+  creations, and to learn how the script renders the sprites into voxels.
+
+LICENSE:
+  The voxel sprites are released free to use in any way the user desires,
+  without limitations.

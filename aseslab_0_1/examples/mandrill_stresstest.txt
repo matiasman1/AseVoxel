@@ -1,0 +1,14 @@
+
+SPRITE SETTINGS
+    Tile size:          32 by 32
+    Tiles per image:    8 columns, 4 rows.
+    Render all layers:  No
+
+USAGE
+    This voxel sprite is a stress test for the engine. It shows how slow the
+    rendering becomes when an image is not culled for invisible pixels. The
+    user can also use it to test the "Hide inner voxels" setting on the program.
+
+LICENSE
+    The voxel sprite is derived from the image "Mandrill" from the USC-SIPI
+    Image Database, which is assumed to be in the public domain.

@@ -1,0 +1,24 @@
+{
+    "name": "asevoxel-viewer",
+    "displayName": "AseVoxel - Viewer",
+    "description": "3D voxel model viewer for Aseprite with native renderer support",
+    "version": "1.2.8",
+    "author": {
+        "name": "Pixelmatt"
+    },
+    "contributors": [
+        "Pixelmatt"
+    ],
+    "publisher": "Pixelmatt",
+    "license": "MIT",
+    "categories": [
+        "Scripts"
+    ],
+    "contributes": {
+        "scripts": [
+            {
+                "path": "./main.lua"
+            }
+        ]
+    }
+}

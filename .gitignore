@@ -26,12 +26,6 @@ luac.out
 *.exp
 *.cpp
 
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
 # Executables
 *.exe
 *.out
@@ -42,11 +36,4 @@ luac.out
 *.backup
 
 release_notes/
-scripts/
-build/
-refactor/
-thirdparty/
-aseslab_0_1/
-AseVoxel\ Viewer/
 api/
-AseVoxel-Viewer.aseprite-extension

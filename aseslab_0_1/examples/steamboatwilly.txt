@@ -1,0 +1,14 @@
+
+SPRITE SETTINGS
+    Tile size:          24 by 24
+    Tiles per image:    5 columns, 4 rows.
+    Render all layers:  Yes
+
+USAGE
+    This voxel sprite shows how the script can render multiple layers at once,
+    separating the face, ears and hat from the head, which are then combined
+    on the preview.
+
+LICENSE
+    The voxel sprite is in the public domain, and can be freely used
+    without restriction.
