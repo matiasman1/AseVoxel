@@ -30,7 +30,8 @@ $(shell mkdir -p $(OUTDIR))
 # Shader targets
 SHADERS := \
 	$(OUTDIR)/libnative_shader_basic$(EXT) \
-	$(OUTDIR)/libnative_shader_dynamic$(EXT)
+	$(OUTDIR)/libnative_shader_dynamic$(EXT) \
+	$(OUTDIR)/libnative_shader_faceshade$(EXT)
 
 # Loader library
 LOADER := $(OUTDIR)/libnative_shader_loader.a
@@ -53,6 +54,11 @@ $(OUTDIR)/libnative_shader_basic$(EXT): basic_lighting_shader.cpp ../native_shad
 
 # Dynamic Lighting Shader
 $(OUTDIR)/libnative_shader_dynamic$(EXT): dynamic_lighting_shader.cpp ../native_shader_api.h
+	@echo "Building $@..."
+	$(CXX) $(CXXFLAGS) $(LDFLAGS)$@ $< -o $@
+
+# FaceShade Shader
+$(OUTDIR)/libnative_shader_faceshade$(EXT): faceshade_shader.cpp ../native_shader_api.h
 	@echo "Building $@..."
 	$(CXX) $(CXXFLAGS) $(LDFLAGS)$@ $< -o $@
 

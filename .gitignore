@@ -24,7 +24,6 @@ luac.out
 *.lo
 *.def
 *.exp
-*.cpp
 
 # Executables
 *.exe
